@@ -8,7 +8,7 @@ Play: **https://bddap-bot.github.io/perch/**
 
 1. Allow the camera.
 2. Step out of view during the countdown so the game can learn the empty scene.
-3. Come back and protect the bird. It moves on its own; you play with your body and whatever you hold.
+3. Come back and protect the bird. It moves on its own and likes to stay near your eyes when it feels safe; you play with your body and whatever you hold.
 
 - Monsters creep in from the edges of the screen and fly through open air toward the bird. Swat one with a moving hand or object to knock it out.
 - Wall the bird in and the monsters cannot reach it, but it needs air: when no open path leads from the bird to the edge of the screen, its air pocket turns red and its bubbles run out. Open a gap before they do.

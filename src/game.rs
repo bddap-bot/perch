@@ -17,6 +17,8 @@ const MASK: (u32, u32) = (240, 180);
 const COUNTDOWN: f32 = 3.0;
 const STALL: f32 = 3.0;
 const RESTART: f32 = 3.0;
+const EYE_FOLLOW: f32 = 8.0;
+const EYES_LOST: f32 = 0.5;
 const TINT: [u8; 4] = [70, 230, 255, 26];
 const EDGE: [u8; 4] = [200, 250, 255, 160];
 const STALE_AIR: [u8; 3] = [255, 96, 72];
@@ -255,8 +257,32 @@ fn recapture(
     }
 }
 
-fn play(mut game: ResMut<Game>, time: Res<Time>) {
+#[derive(Default)]
+struct EyeTrack {
+    at: Option<(f32, f32)>,
+    seen: f32,
+}
+
+fn play(
+    mut game: ResMut<Game>,
+    camera: NonSend<Camera>,
+    time: Res<Time>,
+    mut eyes: Local<EyeTrack>,
+) {
     let now = time.elapsed_secs();
+    match (camera.webcam.eyes(&camera.surface), eyes.at) {
+        (Some(raw), Some(at)) => {
+            let k = 1.0 - (-time.delta_secs() * EYE_FOLLOW).exp();
+            eyes.at = Some((at.0 + (raw.0 - at.0) * k, at.1 + (raw.1 - at.1) * k));
+            eyes.seen = now;
+        }
+        (Some(raw), None) => {
+            eyes.at = Some(raw);
+            eyes.seen = now;
+        }
+        (None, _) if now - eyes.seen > EYES_LOST => eyes.at = None,
+        (None, _) => {}
+    }
     let Game { seg, phase, .. } = &mut *game;
     let Phase::Playing { round, lost_at } = phase else {
         return;
@@ -265,7 +291,7 @@ fn play(mut game: ResMut<Game>, time: Res<Time>) {
     let mut left = time.delta_secs().min(0.25);
     while left > 0.0 {
         let dt = left.min(MAX_STEP);
-        round.step(&seg.mask, None, dt);
+        round.step(&seg.mask, eyes.at, dt);
         left -= dt;
     }
     match (was_lost, round.lost.is_some()) {

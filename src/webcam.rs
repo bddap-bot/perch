@@ -15,6 +15,11 @@ extern "C" {
     fn release_camera(video: &HtmlVideoElement);
 }
 
+#[wasm_bindgen(module = "/web/face.js")]
+extern "C" {
+    fn eyes(video: &HtmlVideoElement) -> Vec<f64>;
+}
+
 pub enum Status {
     Waiting,
     Live,
@@ -87,23 +92,28 @@ impl Webcam {
         true
     }
 
-    pub fn read(&self, surface: &Surface) -> Vec<u8> {
+    fn crop(&self, w: f64, h: f64) -> [f64; 4] {
         let (vw, vh) = (
             self.video.video_width() as f64,
             self.video.video_height() as f64,
         );
-        let (w, h) = (surface.width as f64, surface.height as f64);
         let (sw, sh) = if vw / vh > w / h {
             (vh * w / h, vh)
         } else {
             (vw, vw * h / w)
         };
+        [(vw - sw) / 2.0, (vh - sh) / 2.0, sw, sh]
+    }
+
+    pub fn read(&self, surface: &Surface) -> Vec<u8> {
+        let (w, h) = (surface.width as f64, surface.height as f64);
+        let [sx, sy, sw, sh] = self.crop(w, h);
         let ctx = &surface.ctx;
         ctx.set_transform(-1.0, 0.0, 0.0, 1.0, w, 0.0).unwrap();
         ctx.draw_image_with_html_video_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
             &self.video,
-            (vw - sw) / 2.0,
-            (vh - sh) / 2.0,
+            sx,
+            sy,
             sw,
             sh,
             0.0,
@@ -113,6 +123,15 @@ impl Webcam {
         )
         .unwrap();
         ctx.get_image_data(0.0, 0.0, w, h).unwrap().data().0
+    }
+
+    pub fn eyes(&self, surface: &Surface) -> Option<(f32, f32)> {
+        let &[x, y] = eyes(&self.video).as_slice() else {
+            return None;
+        };
+        let (w, h) = (surface.width as f64, surface.height as f64);
+        let [sx, sy, sw, sh] = self.crop(w, h);
+        Some(((w - (x - sx) / sw * w) as f32, ((y - sy) / sh * h) as f32))
     }
 }
 

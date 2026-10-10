@@ -11,6 +11,7 @@ const PANIC_BREATH: f32 = 0.5;
 pub const LOW_AIR: f32 = 0.35;
 const PECK_BEAT: f32 = 0.22;
 const CANDIDATES: usize = 48;
+const NEAR_EYES: f32 = 40.0;
 
 pub struct Senses<'a> {
     pub mask: &'a Mask,
@@ -39,7 +40,6 @@ pub struct Look {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Act {
     Still,
-    Gaze,
     LookBack,
     Tilt(f32),
     Peck,
@@ -152,8 +152,11 @@ impl Brain {
             } else {
                 rng.range(0.2, 0.8)
             };
-            if s.eyes.is_some() && !scared {
-                self.rest *= 1.8;
+            if let (Some(g), Some(e)) = (self.goal, s.eyes)
+                && !scared
+                && dist(centre_at(g.x, g.y), e) < NEAR_EYES
+            {
+                self.rest *= 2.0;
             }
             self.act = Act::Still;
             self.act_left = 0.0;
@@ -171,7 +174,7 @@ impl Brain {
             if self.act_left <= 0.0 {
                 let (cx, cy) = body.cell();
                 let fresh = s.ground.novel(cx + WIDTH / 2, cy + HEIGHT);
-                self.choose_act(s.eyes.is_some(), fresh, rng);
+                self.choose_act(fresh, rng);
             }
         } else if !perched {
             self.act = Act::Still;
@@ -293,15 +296,14 @@ impl Brain {
         input
     }
 
-    fn choose_act(&mut self, eyes: bool, fresh: bool, rng: &mut Rng) {
+    fn choose_act(&mut self, fresh: bool, rng: &mut Rng) {
         if fresh && self.act != Act::Peck {
             self.act = Act::Peck;
             self.act_left = PECK_BEAT * rng.range(2.0, 4.99).floor();
             return;
         }
-        let options: [(Act, f32); 6] = [
+        let options: [(Act, f32); 5] = [
             (Act::Still, 2.0),
-            (Act::Gaze, if eyes { 3.0 } else { 0.0 }),
             (Act::LookBack, 1.6),
             (
                 Act::Tilt(rng.range(0.15, 0.35).copysign(rng.range(-1.0, 1.0))),
@@ -328,7 +330,6 @@ impl Brain {
         }
         self.act_left = match self.act {
             Act::Still => rng.range(0.4, 1.6),
-            Act::Gaze => rng.range(1.0, 2.5),
             Act::LookBack => rng.range(0.5, 1.4),
             Act::Tilt(_) => rng.range(0.5, 1.1),
             Act::Peck => PECK_BEAT * rng.range(1.0, 3.99).floor(),
@@ -391,12 +392,6 @@ impl Brain {
         let mut tilt = 0.0;
         if !moving && body.grounded {
             match self.act {
-                Act::Gaze => {
-                    if let Some(e) = s.eyes {
-                        face_left = toward(e);
-                        tilt = if e.1 < me.1 { -0.3 } else { 0.15 };
-                    }
-                }
                 Act::LookBack => face_left = !face_left,
                 Act::Tilt(a) => tilt = a,
                 Act::Peck => {
