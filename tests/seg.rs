@@ -38,7 +38,8 @@ fn room(x: usize, y: usize) -> [f32; 3] {
 struct Scene {
     noise: Noise,
     gain: [f32; 3],
-    shadow: Option<Rect>,
+    shadow: Option<(Rect, f32)>,
+    camouflage: Option<Rect>,
     objects: Vec<(Rect, [f32; 3])>,
 }
 
@@ -48,6 +49,7 @@ impl Scene {
             noise: Noise(7),
             gain: [1.0; 3],
             shadow: None,
+            camouflage: None,
             objects: Vec::new(),
         }
     }
@@ -63,11 +65,18 @@ impl Scene {
                         c = colour.map(|v| v * if (x + y) % 9 == 0 { 0.9 } else { 1.0 });
                     }
                 }
-                let shade = if self.shadow.is_some_and(inside) {
-                    0.6
-                } else {
-                    1.0
-                };
+                if self.camouflage.is_some_and(inside) {
+                    let weave = if (x / 3 + y / 3) % 2 == 0 { 1.18 } else { 0.84 };
+                    c = c.map(|v| v * weave);
+                }
+                let shade = self.shadow.map_or(1.0, |(r, penumbra)| {
+                    let depth = [x as f32 - r.0 as f32, r.2 as f32 - 1.0 - x as f32]
+                        .into_iter()
+                        .chain([y as f32 - r.1 as f32, r.3 as f32 - 1.0 - y as f32])
+                        .fold(f32::INFINITY, f32::min);
+                    let t = ((depth + 1.0) / (penumbra + 1.0)).clamp(0.0, 1.0);
+                    1.0 - 0.4 * t
+                });
                 for (v, gain) in c.into_iter().zip(self.gain) {
                     let n = self.noise.next() * 10.0;
                     out.push((v * gain * shade + n).clamp(0.0, 255.0) as u8);
@@ -185,9 +194,15 @@ fn a_large_object_survives_a_white_balance_shift() {
 fn cast_shadow_is_not_solid() {
     let mut scene = Scene::new();
     let mut seg = captured(&mut scene);
-    scene.shadow = Some((40, 60, 140, 150));
-    seg.segment(&scene.frame());
-    assert!(outside(&seg, &[]) < 0.002, "{}", outside(&seg, &[]));
+    for penumbra in [0.0, 3.0, 6.0] {
+        scene.shadow = Some(((40, 60, 140, 150), penumbra));
+        seg.segment(&scene.frame());
+        assert!(
+            outside(&seg, &[]) < 0.002,
+            "penumbra {penumbra}: {}",
+            outside(&seg, &[])
+        );
+    }
 }
 
 #[test]
@@ -216,15 +231,35 @@ fn dark_object_on_light_wall_is_solid_despite_matching_chroma() {
 }
 
 #[test]
+fn a_textured_object_the_colour_of_the_wall_is_solid() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let r = (60, 110, 110, 150);
+    scene.camouflage = Some(r);
+    for _ in 0..5 {
+        seg.segment(&scene.frame());
+    }
+    assert!(coverage(&seg, r) > 0.9, "{}", coverage(&seg, r));
+    assert!(outside(&seg, &[r]) < 0.002, "{}", outside(&seg, &[r]));
+}
+
+#[test]
 fn a_still_object_is_not_absorbed_into_the_background() {
     let mut scene = Scene::new();
     let mut seg = captured(&mut scene);
     let r = (30, 30, 70, 60);
+    let camouflaged = (60, 110, 110, 150);
     scene.objects.push((r, [40.0, 180.0, 60.0]));
+    scene.camouflage = Some(camouflaged);
     for _ in 0..600 {
         seg.segment(&scene.frame());
     }
     assert!(coverage(&seg, r) > 0.95, "{}", coverage(&seg, r));
+    assert!(
+        coverage(&seg, camouflaged) > 0.9,
+        "{}",
+        coverage(&seg, camouflaged)
+    );
 }
 
 #[test]
