@@ -1,7 +1,5 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
@@ -11,8 +9,10 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, HtmlVideoElement};
 extern "C" {
     #[wasm_bindgen(js_name = openCamera)]
     fn open_camera(video: &HtmlVideoElement) -> js_sys::Promise;
-    #[wasm_bindgen(js_name = holdCamera)]
-    fn hold_camera(video: &HtmlVideoElement, hold: bool) -> js_sys::Promise;
+    #[wasm_bindgen(js_name = lockCamera)]
+    fn lock_camera(video: &HtmlVideoElement);
+    #[wasm_bindgen(js_name = releaseCamera)]
+    fn release_camera(video: &HtmlVideoElement);
 }
 
 pub enum Status {
@@ -67,15 +67,12 @@ impl Webcam {
         }
     }
 
-    pub fn hold(&self, on: bool) -> Arc<AtomicBool> {
-        let settled = Arc::new(AtomicBool::new(false));
-        let promise = hold_camera(&self.video, on);
-        let flag = settled.clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
-            flag.store(true, Ordering::Relaxed);
-        });
-        settled
+    pub fn lock(&self) {
+        lock_camera(&self.video);
+    }
+
+    pub fn release(&self) {
+        release_camera(&self.video);
     }
 
     pub fn new_frame(&mut self) -> bool {

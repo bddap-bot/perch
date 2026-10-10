@@ -168,6 +168,20 @@ fn exposure_and_white_balance_ramp_is_not_foreground() {
 }
 
 #[test]
+fn a_large_object_survives_a_white_balance_shift() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let body = (60, 30, 180, 180);
+    scene.objects.push((body, [190.0, 50.0, 40.0]));
+    scene.gain = [0.8, 0.9, 1.15];
+    for _ in 0..30 {
+        seg.segment(&scene.frame());
+    }
+    assert!(coverage(&seg, body) > 0.95, "{}", coverage(&seg, body));
+    assert!(outside(&seg, &[body]) < 0.002, "{}", outside(&seg, &[body]));
+}
+
+#[test]
 fn cast_shadow_is_not_solid() {
     let mut scene = Scene::new();
     let mut seg = captured(&mut scene);

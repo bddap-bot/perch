@@ -1,31 +1,39 @@
 const WANTED = { width: 640, height: 480, facingMode: "user" };
-const HELD = [
-  ["exposureMode", "exposureTime"],
-  ["whiteBalanceMode", "colorTemperature"],
-  ["focusMode", "focusDistance"],
-];
+const LOCKABLE = ["exposureMode", "whiteBalanceMode", "focusMode"];
+let saved = null;
 
 export async function openCamera(video) {
   video.srcObject = await navigator.mediaDevices.getUserMedia({ video: WANTED });
   await video.play();
+  addEventListener("pagehide", () => releaseCamera(video));
 }
 
-export async function holdCamera(video, hold) {
+export async function lockCamera(video) {
   const track = video.srcObject?.getVideoTracks()[0];
-  if (!track?.getCapabilities) return;
+  if (!track?.getCapabilities || saved) return;
   const caps = track.getCapabilities();
   const now = track.getSettings();
-  const mode = hold ? "manual" : "continuous";
-  const advanced = HELD.filter(([m]) => caps[m]?.includes(mode)).map(([m, value]) =>
-    hold && value in caps && value in now ? { [m]: mode, [value]: now[value] } : { [m]: mode },
-  );
-  if (advanced.length) {
-    try {
-      await track.applyConstraints({ ...WANTED, advanced });
-    } catch (e) {
-      console.warn("camera settings not applied", e);
-    }
+  const lockable = LOCKABLE.filter((m) => caps[m]?.includes("manual") && m in now);
+  saved = lockable.map((m) => ({ [m]: now[m] }));
+  await apply(track, lockable.map((m) => ({ [m]: "manual" })));
+  const after = track.getSettings();
+  console.info("camera locked:", LOCKABLE.map((m) => `${m}=${after[m] ?? "unsupported"}`).join(" "));
+}
+
+export async function releaseCamera(video) {
+  const track = video.srcObject?.getVideoTracks()[0];
+  if (!track || !saved) return;
+  const modes = saved;
+  saved = null;
+  await apply(track, modes);
+}
+
+async function apply(track, advanced) {
+  if (!advanced.length) return;
+  try {
+    // Chromium's getConstraints() forgets the basic constraints once image-capture ones apply.
+    await track.applyConstraints({ ...WANTED, advanced });
+  } catch (e) {
+    console.warn("camera settings not applied", e);
   }
-  const settings = track.getSettings();
-  console.info(`camera ${mode}:`, HELD.map(([m]) => `${m}=${settings[m] ?? "unsupported"}`).join(" "));
 }

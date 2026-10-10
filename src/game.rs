@@ -7,8 +7,6 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use perch::body::{self, Body, Input};
 use perch::seg::Segmenter;
 use perch::sprite::{self, Frame};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::webcam::{Surface, Webcam};
 
@@ -64,7 +62,6 @@ struct Camera {
 enum Phase {
     WaitingCamera,
     Countdown { until: f32 },
-    Holding(Arc<AtomicBool>),
     Capturing,
     Playing { body: Body, anim_clock: f32 },
 }
@@ -157,14 +154,12 @@ fn feed(
             }
         }
         Phase::Countdown { until } if now >= *until => {
-            *phase = Phase::Holding(camera.webcam.hold(true));
-        }
-        Phase::Holding(settled) if settled.load(Ordering::Relaxed) => {
+            camera.webcam.lock();
             seg.begin_capture();
             seg.add_capture_frame(&frame);
             *phase = Phase::Capturing;
         }
-        Phase::Countdown { .. } | Phase::Holding(_) => {}
+        Phase::Countdown { .. } => {}
         Phase::Capturing => {
             if seg.add_capture_frame(&frame) {
                 *phase = Phase::Playing {
@@ -226,7 +221,7 @@ fn control(
     let Game { seg, phase } = &mut *game;
     if recapture && matches!(phase, Phase::Playing { .. } | Phase::Capturing) {
         seg.begin_capture();
-        camera.webcam.hold(false);
+        camera.webcam.release();
         *phase = Phase::Countdown {
             until: time.elapsed_secs() + COUNTDOWN,
         };
@@ -262,7 +257,7 @@ fn hint(game: Res<Game>, camera: NonSend<Camera>, time: Res<Time>, mut shown: Lo
             Phase::Countdown { until } => {
                 format!("Step out of view · {}", (until - now).ceil().max(1.0))
             }
-            Phase::Holding(_) | Phase::Capturing => "Hold still".into(),
+            Phase::Capturing => "Hold still".into(),
             Phase::Playing { .. } => "B: recapture the empty scene".into(),
         }
     };

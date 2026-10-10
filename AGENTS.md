@@ -14,7 +14,7 @@
 - `src/sprite.rs`: pixel-art frames.
 - `src/game.rs`, `src/webcam.rs`, `web/camera.js`: the wasm32-only Bevy front end. `getUserMedia` feeds the page's `<video>`, which CSS shows mirrored behind a transparent Bevy canvas; the game draws only the mask tint and the character. An offscreen 2D canvas reads the video mirrored and centre-cropped to 4:3 at mask resolution (240x180), and segmentation runs only when the video has a new frame. When the countdown ends, `web/camera.js` locks exposure, white balance and focus at their current values wherever the browser exposes them as manual modes, before the empty scene is captured; recapture hands them back to the camera. The `#stage` box in `web/index.html` and the camera's `ScalingMode::AutoMin` must frame the same 4:3 rectangle.
 
-Native `cargo test` covers segmentation (busy background, lighting shift, cast shadow, moving and still objects), collision and sprites. Bevy is a wasm32-only dependency, so native builds stay small.
+Native `cargo test` covers segmentation (busy background, exposure and white-balance drift, cast shadow, moving and still objects), collision and sprites. Bevy is a wasm32-only dependency, so native builds stay small.
 
 ## Landing contract
 
