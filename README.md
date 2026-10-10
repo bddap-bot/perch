@@ -1,6 +1,6 @@
 # perch
 
-A tiny bird hops around on whatever your webcam sees. Put a book on the desk, hold out an arm, lean into frame: anything that was not there when the empty scene was captured becomes ground.
+A tiny bird lives on whatever your webcam sees, and little monsters want to catch it. Anything that was not there when the empty scene was captured becomes solid: the bird perches and hops on it, and the monsters cannot pass through it.
 
 Play: **https://bddap-bot.github.io/perch/**
 
@@ -8,15 +8,14 @@ Play: **https://bddap-bot.github.io/perch/**
 
 1. Allow the camera.
 2. Step out of view during the countdown so the game can learn the empty scene.
-3. Come back, place things, and move the bird across them.
+3. Come back and protect the bird. It moves on its own; you play with your body and whatever you hold.
 
-| | Keyboard | Gamepad |
-|---|---|---|
-| Run | ← → (or A D) | left stick / d-pad |
-| Jump | Space (or ↑ W Z) | bottom face button |
-| Recapture the empty scene | B | right face button or Select |
+- Monsters creep in from the edges of the screen and fly through open air toward the bird. Swat one with a moving hand or object to knock it out.
+- Wall the bird in and the monsters cannot reach it, but it needs air: when no open path leads from the bird to the edge of the screen, its air pocket turns red and its bubbles run out. Open a gap before they do.
+- The bird is caught or runs out of air: the round ends, your time is shown, and a new round starts.
+- Click or tap to recapture the empty scene.
 
-Anything highlighted counts as ground, and its top edges are drawn brighter. Keep the camera still: moving it makes the whole room look new, so recapture after bumping it. Soft shadows and whole-room brightness or colour changes are ignored; a lamp switched on near one part of the scene needs a recapture.
+Highlighted areas count as solid, and their top edges are drawn brighter. Keep the camera still: moving it makes the whole room look new, so recapture after bumping it. Soft shadows and whole-room brightness or colour changes are ignored; a lamp switched on near one part of the scene needs a recapture.
 
 ## Build
 

@@ -1,5 +1,4 @@
 use crate::seg::Mask;
-use crate::sprite::Frame;
 
 pub const WIDTH: i32 = 7;
 pub const HEIGHT: i32 = 8;
@@ -7,38 +6,22 @@ pub const HEIGHT: i32 = 8;
 const GRAVITY: f32 = 620.0;
 const HELD_JUMP_GRAVITY: f32 = 340.0;
 const JUMP_SPEED: f32 = 190.0;
+const FLAP_SPEED: f32 = 120.0;
 const RUN_SPEED: f32 = 75.0;
 const RUN_ACCEL: f32 = 700.0;
 const MAX_FALL: f32 = 260.0;
-const STEP_UP: i32 = 3;
+pub const STEP_UP: i32 = 3;
 const SNAP_DOWN: i32 = 3;
 const COYOTE: f32 = 0.08;
 const JUMP_BUFFER: f32 = 0.1;
+pub const MAX_STEP: f32 = 1.0 / 30.0;
 
 #[derive(Clone, Copy, Default)]
 pub struct Input {
     pub run: f32,
     pub jump_pressed: bool,
     pub jump_held: bool,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Pose {
-    Idle,
-    Run,
-    Jump,
-    Fall,
-}
-
-impl Pose {
-    pub fn frame(self, stride: bool) -> Frame {
-        match self {
-            Pose::Run if stride => Frame::Stride,
-            Pose::Idle | Pose::Run => Frame::Stand,
-            Pose::Jump => Frame::Jump,
-            Pose::Fall => Frame::Fall,
-        }
-    }
+    pub flap: bool,
 }
 
 pub struct Body {
@@ -66,26 +49,16 @@ impl Body {
         }
     }
 
-    pub fn pose(&self) -> Pose {
-        if self.grounded {
-            if self.vx.abs() > 5.0 {
-                Pose::Run
-            } else {
-                Pose::Idle
-            }
-        } else if self.vy < 0.0 {
-            Pose::Jump
-        } else {
-            Pose::Fall
-        }
+    pub fn centre(&self) -> (f32, f32) {
+        centre_at(self.x, self.y)
     }
 
-    fn cell(&self) -> (i32, i32) {
+    pub fn cell(&self) -> (i32, i32) {
         (self.x.round() as i32, self.y.round() as i32)
     }
 
     pub fn step(&mut self, mask: &Mask, input: Input, dt: f32) {
-        let dt = dt.min(1.0 / 30.0);
+        let dt = dt.min(MAX_STEP);
         self.depenetrate(mask);
 
         let target = input.run.clamp(-1.0, 1.0) * RUN_SPEED;
@@ -105,6 +78,10 @@ impl Body {
             self.grounded = false;
             self.coyote = 0.0;
             self.buffered_jump = 0.0;
+        }
+
+        if input.flap && !self.grounded {
+            self.vy = self.vy.min(-FLAP_SPEED);
         }
 
         let gravity = if self.vy < 0.0 && input.jump_held {
@@ -192,6 +169,10 @@ impl Body {
     }
 }
 
-fn overlaps(mask: &Mask, x: i32, y: i32) -> bool {
+pub fn centre_at(x: f32, y: f32) -> (f32, f32) {
+    (x + WIDTH as f32 / 2.0, y + HEIGHT as f32 / 2.0)
+}
+
+pub fn overlaps(mask: &Mask, x: i32, y: i32) -> bool {
     (y..y + HEIGHT).any(|cy| (x..x + WIDTH).any(|cx| mask.solid(cx, cy)))
 }

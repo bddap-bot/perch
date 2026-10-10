@@ -1,4 +1,4 @@
-use perch::body::{Body, HEIGHT, Input, Pose, WIDTH};
+use perch::body::{Body, HEIGHT, Input, WIDTH};
 use perch::seg::Mask;
 
 const W: usize = 120;
@@ -33,7 +33,6 @@ fn falls_and_lands_on_top_of_a_platform() {
     }
     assert!(b.grounded);
     assert_eq!(b.y.round() as i32, 60 - HEIGHT);
-    assert_eq!(b.pose(), Pose::Idle);
 }
 
 #[test]
@@ -132,6 +131,7 @@ fn jumps_onto_a_higher_ledge() {
             run: 1.0,
             jump_pressed: i == 0,
             jump_held: i < 30,
+            ..Input::default()
         };
         b.step(&mask, input, DT);
         assert!(!inside(&mask, &b));

@@ -4,8 +4,11 @@ use bevy::camera::ScalingMode;
 use bevy::ecs as bevy_ecs;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use perch::body::{self, Body, Input};
-use perch::seg::Segmenter;
+use bevy::sprite::Anchor;
+use perch::bird::LOW_AIR;
+use perch::body::{HEIGHT, MAX_STEP};
+use perch::play::{Loss, MAX_BADDIES, MAX_POOFS, POOF_SECONDS, Round};
+use perch::seg::{Mask, Segmenter};
 use perch::sprite::{self, Frame};
 
 use crate::webcam::{Surface, Webcam};
@@ -13,14 +16,11 @@ use crate::webcam::{Surface, Webcam};
 const MASK: (u32, u32) = (240, 180);
 const COUNTDOWN: f32 = 3.0;
 const STALL: f32 = 3.0;
+const RESTART: f32 = 3.0;
 const TINT: [u8; 4] = [70, 230, 255, 26];
 const EDGE: [u8; 4] = [200, 250, 255, 160];
-const JUMP_KEYS: [KeyCode; 4] = [
-    KeyCode::Space,
-    KeyCode::ArrowUp,
-    KeyCode::KeyW,
-    KeyCode::KeyZ,
-];
+const STALE_AIR: [u8; 3] = [255, 96, 72];
+const BUBBLES: usize = 5;
 
 pub fn run() {
     App::new()
@@ -47,9 +47,10 @@ pub fn run() {
         .insert_resource(Game {
             seg: Segmenter::new(MASK.0 as usize, MASK.1 as usize),
             phase: Phase::WaitingCamera,
+            mask_dirty: false,
         })
         .add_systems(Startup, setup)
-        .add_systems(Update, (feed, control, hint).chain())
+        .add_systems(Update, (feed, recapture, play, draw, hint).chain())
         .run();
 }
 
@@ -63,23 +64,30 @@ enum Phase {
     WaitingCamera,
     Countdown { until: f32 },
     Capturing,
-    Playing { body: Body, anim_clock: f32 },
+    Playing { round: Box<Round>, lost_at: f32 },
 }
 
 #[derive(Resource)]
 struct Game {
     seg: Segmenter,
     phase: Phase,
+    mask_dirty: bool,
 }
 
 #[derive(Resource)]
 struct Art {
     mask: Handle<Image>,
-    frames: [Handle<Image>; Frame::ALL.len()],
+    bird: Vec<Handle<Image>>,
+    baddie: [Handle<Image>; 2],
 }
 
-#[derive(Component)]
-struct Player;
+#[derive(Component, Clone, Copy)]
+enum Role {
+    Bird,
+    Baddie(usize),
+    Poof(usize),
+    Bubble(usize),
+}
 
 fn image(width: u32, height: u32, data: Vec<u8>) -> Image {
     Image::new(
@@ -95,6 +103,18 @@ fn image(width: u32, height: u32, data: Vec<u8>) -> Image {
     )
 }
 
+fn sized(images: &mut Assets<Image>, (w, h): (usize, usize), data: Vec<u8>) -> Handle<Image> {
+    images.add(image(w as u32, h as u32, data))
+}
+
+fn seed() -> u32 {
+    (js_sys::Math::random() * u32::MAX as f64) as u32
+}
+
+fn world(x: f32, y: f32) -> Vec2 {
+    Vec2::new(x - MASK.0 as f32 / 2.0, MASK.1 as f32 / 2.0 - y)
+}
+
 fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     commands.spawn((
         Camera2d,
@@ -106,39 +126,74 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             ..OrthographicProjection::default_2d()
         }),
     ));
-    let size = Vec2::new(MASK.0 as f32, MASK.1 as f32);
     let mask = images.add(image(
         MASK.0,
         MASK.1,
         vec![0; (MASK.0 * MASK.1 * 4) as usize],
     ));
-    let (sw, sh) = (sprite::SIZE.0 as u32, sprite::SIZE.1 as u32);
-    let frames = Frame::ALL.map(|f| images.add(image(sw, sh, sprite::pixels(f))));
+    let bird: Vec<_> = Frame::all()
+        .map(|f| sized(&mut images, sprite::BIRD, sprite::bird(f)))
+        .collect();
+    let baddie = [0, 1].map(|s| sized(&mut images, sprite::BADDIE, sprite::baddie(s)));
+    let puff = sized(&mut images, sprite::PUFF, sprite::puff());
+    let bubble = sized(&mut images, sprite::BUBBLE, sprite::bubble());
     commands.spawn(Sprite {
         image: mask.clone(),
-        custom_size: Some(size),
+        custom_size: Some(Vec2::new(MASK.0 as f32, MASK.1 as f32)),
         ..default()
     });
-    commands.spawn((
-        Player,
-        Sprite {
-            image: frames[0].clone(),
-            custom_size: Some(Vec2::new(body::WIDTH as f32, body::HEIGHT as f32)),
-            ..default()
-        },
-        Transform::from_xyz(0.0, 0.0, 2.0),
-        Visibility::Hidden,
-    ));
-    commands.insert_resource(Art { mask, frames });
+    let mut slot = |role: Role, image: &Handle<Image>, size: Vec2, z: f32, anchor: Anchor| {
+        commands.spawn((
+            role,
+            Sprite {
+                image: image.clone(),
+                custom_size: Some(size),
+                ..default()
+            },
+            anchor,
+            Transform::from_xyz(0.0, 0.0, z),
+            Visibility::Hidden,
+        ));
+    };
+    let half = |(w, h): (usize, usize)| Vec2::new(w as f32 / 2.0, h as f32 / 2.0);
+    slot(
+        Role::Bird,
+        &bird[0],
+        half(sprite::BIRD),
+        3.0,
+        Anchor::BOTTOM_CENTER,
+    );
+    for i in 0..MAX_BADDIES {
+        slot(
+            Role::Baddie(i),
+            &baddie[0],
+            half(sprite::BADDIE),
+            2.0,
+            Anchor::CENTER,
+        );
+    }
+    for i in 0..MAX_POOFS {
+        slot(
+            Role::Poof(i),
+            &puff,
+            half(sprite::PUFF),
+            4.0,
+            Anchor::CENTER,
+        );
+    }
+    for i in 0..BUBBLES {
+        slot(
+            Role::Bubble(i),
+            &bubble,
+            half(sprite::BUBBLE),
+            4.0,
+            Anchor::CENTER,
+        );
+    }
+    commands.insert_resource(Art { mask, bird, baddie });
 }
 
-fn feed(
-    mut camera: NonSendMut<Camera>,
-    mut game: ResMut<Game>,
-    art: Res<Art>,
-    mut images: ResMut<Assets<Image>>,
-    time: Res<Time>,
-) {
+fn feed(mut camera: NonSendMut<Camera>, mut game: ResMut<Game>, time: Res<Time>) {
     let now = time.elapsed_secs();
     if !camera.webcam.new_frame() {
         return;
@@ -146,7 +201,12 @@ fn feed(
     camera.last_frame = now;
     let frame = camera.webcam.read(&camera.surface);
 
-    let Game { seg, phase } = &mut *game;
+    let Game {
+        seg,
+        phase,
+        mask_dirty,
+    } = &mut *game;
+    *mask_dirty = true;
     match phase {
         Phase::WaitingCamera => {
             *phase = Phase::Countdown {
@@ -163,84 +223,171 @@ fn feed(
         Phase::Capturing => {
             if seg.add_capture_frame(&frame) {
                 *phase = Phase::Playing {
-                    body: Body::spawn(&seg.mask),
-                    anim_clock: 0.0,
+                    round: Box::new(Round::new(&seg.mask, seed())),
+                    lost_at: 0.0,
                 };
             }
         }
-        Phase::Playing { .. } => seg.segment(&frame),
-    }
-
-    if let Some(mut img) = images.get_mut(&art.mask)
-        && let Some(data) = img.data.as_mut()
-    {
-        let mask = &seg.mask;
-        for (i, px) in data.chunks_exact_mut(4).enumerate() {
-            let (x, y) = ((i % mask.width) as i32, (i / mask.width) as i32);
-            px.copy_from_slice(&match (mask.solid(x, y), mask.solid(x, y - 1)) {
-                (true, false) => EDGE,
-                (true, true) => TINT,
-                _ => [0; 4],
-            });
+        Phase::Playing { round, .. } => {
+            seg.segment(&frame);
+            round.observe(&seg.mask);
         }
     }
 }
 
-fn control(
+fn recapture(
     mut game: ResMut<Game>,
     camera: NonSend<Camera>,
-    keys: Res<ButtonInput<KeyCode>>,
-    pads: Query<&Gamepad>,
-    art: Res<Art>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    touches: Res<Touches>,
     time: Res<Time>,
-    mut player: Single<(&mut Transform, &mut Sprite, &mut Visibility), With<Player>>,
 ) {
-    let held = |k: &[KeyCode]| keys.any_pressed(k.iter().copied());
-    let mut input = Input {
-        run: held(&[KeyCode::ArrowRight, KeyCode::KeyD]) as i8 as f32
-            - held(&[KeyCode::ArrowLeft, KeyCode::KeyA]) as i8 as f32,
-        jump_pressed: keys.any_just_pressed(JUMP_KEYS),
-        jump_held: held(&JUMP_KEYS),
-    };
-    let mut recapture = keys.just_pressed(KeyCode::KeyB);
-    for pad in &pads {
-        let stick = pad.left_stick().x;
-        let dpad = pad.pressed(GamepadButton::DPadRight) as i8 as f32
-            - pad.pressed(GamepadButton::DPadLeft) as i8 as f32;
-        if dpad != 0.0 {
-            input.run = dpad;
-        } else if stick.abs() > 0.25 {
-            input.run = stick;
-        }
-        input.jump_pressed |= pad.just_pressed(GamepadButton::South);
-        input.jump_held |= pad.pressed(GamepadButton::South);
-        recapture |=
-            pad.just_pressed(GamepadButton::East) || pad.just_pressed(GamepadButton::Select);
+    if !(mouse.just_pressed(MouseButton::Left) || touches.any_just_pressed()) {
+        return;
     }
-
-    let Game { seg, phase } = &mut *game;
-    if recapture && matches!(phase, Phase::Playing { .. } | Phase::Capturing) {
+    let Game { seg, phase, .. } = &mut *game;
+    if matches!(phase, Phase::Playing { .. } | Phase::Capturing) {
         seg.begin_capture();
         camera.webcam.release();
         *phase = Phase::Countdown {
             until: time.elapsed_secs() + COUNTDOWN,
         };
     }
+}
 
-    let (transform, sprite, visibility) = &mut *player;
-    let Phase::Playing { body, anim_clock } = phase else {
-        **visibility = Visibility::Hidden;
+fn play(mut game: ResMut<Game>, time: Res<Time>) {
+    let now = time.elapsed_secs();
+    let Game { seg, phase, .. } = &mut *game;
+    let Phase::Playing { round, lost_at } = phase else {
         return;
     };
-    body.step(&seg.mask, input, time.delta_secs());
-    *anim_clock += time.delta_secs();
-    let stride = ((*anim_clock * 8.0) as u32).is_multiple_of(2);
-    let frame = body.pose().frame(stride);
-    sprite.image = art.frames[frame as usize].clone();
-    sprite.flip_x = body.facing_left;
-    **visibility = Visibility::Visible;
-    transform.translation.x = body.x.round() + body::WIDTH as f32 / 2.0 - MASK.0 as f32 / 2.0;
-    transform.translation.y = MASK.1 as f32 / 2.0 - body.y.round() - body::HEIGHT as f32 / 2.0;
+    let was_lost = round.lost.is_some();
+    let mut left = time.delta_secs().min(0.25);
+    while left > 0.0 {
+        let dt = left.min(MAX_STEP);
+        round.step(&seg.mask, None, dt);
+        left -= dt;
+    }
+    match (was_lost, round.lost.is_some()) {
+        (false, true) => *lost_at = now,
+        (true, _) if now - *lost_at > RESTART => **round = Round::new(&seg.mask, seed()),
+        _ => {}
+    }
+}
+
+fn paint(data: &mut [u8], mask: &Mask, round: Option<&Round>) {
+    for (i, px) in data.chunks_exact_mut(4).enumerate() {
+        let (x, y) = ((i % mask.width) as i32, (i / mask.width) as i32);
+        px.copy_from_slice(&match (mask.solid(x, y), mask.solid(x, y - 1)) {
+            (true, false) => EDGE,
+            (true, true) => TINT,
+            _ => [0; 4],
+        });
+    }
+    if let Some(round) = round
+        && !round.air.breathes()
+    {
+        let a = 0.1 + 0.25 * (1.0 - round.breath);
+        let px = STALE_AIR.map(|c| (c as f32 * a) as u8);
+        for i in round.air.pocket() {
+            data[i * 4..i * 4 + 4].copy_from_slice(&[px[0], px[1], px[2], (a * 255.0) as u8]);
+        }
+    }
+}
+
+fn draw(
+    mut game: ResMut<Game>,
+    art: Res<Art>,
+    mut images: ResMut<Assets<Image>>,
+    time: Res<Time>,
+    mut tinted: Local<bool>,
+    mut slots: Query<(&Role, &mut Transform, &mut Sprite, &mut Visibility)>,
+) {
+    let t = time.elapsed_secs();
+    let Game {
+        seg,
+        phase,
+        mask_dirty,
+    } = &mut *game;
+    let round = match phase {
+        Phase::Playing { round, .. } => Some(&**round),
+        _ => None,
+    };
+    let sealed = round.is_some_and(|r| !r.air.breathes());
+    if (*mask_dirty || sealed || *tinted)
+        && let Some(mut img) = images.get_mut(&art.mask)
+        && let Some(data) = img.data.as_mut()
+    {
+        paint(data, &seg.mask, round);
+        *mask_dirty = false;
+        *tinted = sealed;
+    }
+
+    for (role, mut transform, mut sprite, mut visibility) in &mut slots {
+        *visibility = Visibility::Hidden;
+        let Some(round) = round else {
+            continue;
+        };
+        match *role {
+            Role::Bird => {
+                let look = round.look;
+                let puffed = if look.frame.puffed { 1.1 } else { 1.0 };
+                let shake = Vec2::new((t * 53.0).sin(), (t * 47.0).cos() * 0.5) * look.shake;
+                let feet = world(round.body.centre().0, round.body.y + HEIGHT as f32);
+                sprite.image = art.bird[look.frame.index()].clone();
+                sprite.flip_x = look.face_left;
+                transform.translation = (feet.round() + shake).extend(transform.translation.z);
+                transform.rotation = Quat::from_rotation_z(if look.face_left {
+                    look.tilt
+                } else {
+                    -look.tilt
+                });
+                transform.scale = Vec3::new(
+                    (1.0 + look.squash * 0.6) * puffed,
+                    (1.0 - look.squash) * puffed,
+                    1.0,
+                );
+            }
+            Role::Baddie(i) => {
+                let Some(b) = round.baddies.get(i) else {
+                    continue;
+                };
+                let step = ((t * 7.0 + i as f32 * 0.37) as usize) % 2;
+                let bob = (t * 9.0 + i as f32).sin() * 0.6;
+                sprite.image = art.baddie[step].clone();
+                sprite.flip_x = b.facing_left;
+                transform.translation = world(b.x, b.y + bob).extend(transform.translation.z);
+            }
+            Role::Poof(i) => {
+                let Some(p) = round.poofs.get(i) else {
+                    continue;
+                };
+                let k = p.age / POOF_SECONDS;
+                sprite.color = Color::srgba(1.0, 1.0, 1.0, 1.0 - k);
+                transform.translation = world(p.x, p.y - k * 4.0).extend(transform.translation.z);
+                transform.scale = Vec3::splat(1.0 + k * 1.5);
+            }
+            Role::Bubble(i) => {
+                if round.breath >= 1.0 || round.lost.is_some() {
+                    continue;
+                }
+                let left = (round.breath * BUBBLES as f32).ceil() as usize;
+                if i >= left {
+                    continue;
+                }
+                let x = round.body.centre().0 + (i as f32 - (BUBBLES - 1) as f32 / 2.0) * 2.5;
+                let wobble = (t * 6.0 + i as f32 * 1.3).sin() * 0.4;
+                transform.translation =
+                    world(x, round.body.y - 3.0 + wobble).extend(transform.translation.z);
+                sprite.color = if round.breath < LOW_AIR {
+                    Color::srgb(1.0, 0.55, 0.5)
+                } else {
+                    Color::WHITE
+                };
+            }
+        }
+        *visibility = Visibility::Visible;
+    }
 }
 
 fn hint(game: Res<Game>, camera: NonSend<Camera>, time: Res<Time>, mut shown: Local<String>) {
@@ -252,13 +399,20 @@ fn hint(game: Res<Game>, camera: NonSend<Camera>, time: Res<Time>, mut shown: Lo
     } else if !matches!(game.phase, Phase::WaitingCamera) && now - camera.last_frame > STALL {
         "The camera stopped sending video. Reload to retry.".into()
     } else {
-        match game.phase {
+        match &game.phase {
             Phase::WaitingCamera => String::new(),
             Phase::Countdown { until } => {
                 format!("Step out of view · {}", (until - now).ceil().max(1.0))
             }
             Phase::Capturing => "Hold still".into(),
-            Phase::Playing { .. } => "B: recapture the empty scene".into(),
+            Phase::Playing { round, .. } => {
+                let secs = round.time as u32;
+                match round.lost {
+                    None => format!("{secs} s"),
+                    Some(Loss::Caught) => format!("Caught · {secs} s"),
+                    Some(Loss::Suffocated) => format!("Out of air · {secs} s"),
+                }
+            }
         }
     };
     if *shown != text {
