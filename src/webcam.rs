@@ -13,7 +13,7 @@ pub enum Status {
 pub struct Webcam {
     video: HtmlVideoElement,
     status: Rc<RefCell<Status>>,
-    last_time: f64,
+    frames_seen: u32,
 }
 
 pub struct Surface {
@@ -41,7 +41,7 @@ impl Webcam {
         Self {
             video,
             status,
-            last_time: -1.0,
+            frames_seen: 0,
         }
     }
 
@@ -60,11 +60,11 @@ impl Webcam {
         if !matches!(*self.status.borrow(), Status::Live) || self.video.ready_state() < 2 {
             return false;
         }
-        let t = self.video.current_time();
-        if t == self.last_time {
+        let frames = self.video.get_video_playback_quality().total_video_frames();
+        if frames == self.frames_seen {
             return false;
         }
-        self.last_time = t;
+        self.frames_seen = frames;
         true
     }
 

@@ -233,7 +233,7 @@ fn control(
     *anim_clock += time.delta_secs();
     let stride = ((*anim_clock * 8.0) as u32).is_multiple_of(2);
     let frame = body.pose().frame(stride);
-    sprite.image = art.frames[Frame::ALL.iter().position(|&f| f == frame).unwrap()].clone();
+    sprite.image = art.frames[frame as usize].clone();
     sprite.flip_x = body.facing_left;
     **visibility = Visibility::Visible;
     transform.translation.x = body.x.round() + body::WIDTH as f32 / 2.0 - MASK.0 as f32 / 2.0;
