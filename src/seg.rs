@@ -147,9 +147,11 @@ impl Segmenter {
 fn global_gain(rgba: &[u8], background: &[Model], ratios: &mut Vec<f32>) -> [f32; 3] {
     std::array::from_fn(|c| {
         ratios.clear();
-        ratios.extend(background.iter().enumerate().step_by(7).map(|(i, model)| {
-            (rgba[i * 4 + c] as f32 + CHANNEL_BIAS) / (model.rgb[c] + CHANNEL_BIAS)
-        }));
+        ratios.extend(
+            background.iter().enumerate().step_by(7).map(|(i, model)| {
+                (pixel(rgba, i)[c] + CHANNEL_BIAS) / (model.rgb[c] + CHANNEL_BIAS)
+            }),
+        );
         if ratios.is_empty() {
             return 1.0;
         }
