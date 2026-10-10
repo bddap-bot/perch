@@ -13,12 +13,14 @@ Play: **https://bddap-bot.github.io/perch/**
 | | Keyboard | Gamepad |
 |---|---|---|
 | Run | ← → (or A D) | left stick / d-pad |
-| Jump | Space (or ↑ W Z) | A |
-| Recapture the empty scene | B | B or Select |
+| Jump | Space (or ↑ W Z) | bottom face button |
+| Recapture the empty scene | B | right face button or Select |
 
-Anything highlighted counts as ground, and its top edges are drawn brighter. A plain wall behind you helps but is not required. Keep the camera still: moving it makes the whole room look new, so recapture after bumping it. Lighting changes and soft shadows are tolerated; a sudden lamp switch-on may need a recapture.
+Anything highlighted counts as ground, and its top edges are drawn brighter. Keep the camera still: moving it makes the whole room look new, so recapture after bumping it. Soft shadows and whole-room brightness changes are ignored; a lamp switched on near one part of the scene needs a recapture.
 
 ## Build
+
+`shell.nix` provides the toolchain, including the exact `wasm-bindgen` version the crate pins.
 
 ```sh
 nix-shell --run ./web/build.sh

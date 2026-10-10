@@ -1,5 +1,3 @@
-use crate::body::Pose;
-
 pub const SIZE: (usize, usize) = (14, 16);
 
 const BODY: [&str; 12] = [
@@ -56,14 +54,25 @@ fn colour(c: u8) -> [u8; 4] {
     }
 }
 
-pub fn frame(pose: Pose, run_phase: bool) -> Vec<u8> {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Frame {
+    Stand,
+    Stride,
+    Jump,
+    Fall,
+}
+
+impl Frame {
+    pub const ALL: [Frame; 4] = [Frame::Stand, Frame::Stride, Frame::Jump, Frame::Fall];
+}
+
+pub fn pixels(frame: Frame) -> Vec<u8> {
     let mut rows: Vec<&str> = BODY.to_vec();
-    let (wing, legs): (&[(usize, &str)], _) = match pose {
-        Pose::Idle => (&WING_REST, LEGS_STAND),
-        Pose::Run if run_phase => (&WING_REST, LEGS_STRIDE),
-        Pose::Run => (&WING_REST, LEGS_STAND),
-        Pose::Jump => (&WING_UP, LEGS_TUCK),
-        Pose::Fall => (&WING_DOWN, LEGS_STAND),
+    let (wing, legs): (&[(usize, &str)], _) = match frame {
+        Frame::Stand => (&WING_REST, LEGS_STAND),
+        Frame::Stride => (&WING_REST, LEGS_STRIDE),
+        Frame::Jump => (&WING_UP, LEGS_TUCK),
+        Frame::Fall => (&WING_DOWN, LEGS_STAND),
     };
     for &(i, row) in wing {
         rows[i] = row;

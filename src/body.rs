@@ -1,4 +1,5 @@
 use crate::seg::Mask;
+use crate::sprite::Frame;
 
 pub const WIDTH: i32 = 7;
 pub const HEIGHT: i32 = 8;
@@ -27,6 +28,17 @@ pub enum Pose {
     Run,
     Jump,
     Fall,
+}
+
+impl Pose {
+    pub fn frame(self, stride: bool) -> Frame {
+        match self {
+            Pose::Run if stride => Frame::Stride,
+            Pose::Idle | Pose::Run => Frame::Stand,
+            Pose::Jump => Frame::Jump,
+            Pose::Fall => Frame::Fall,
+        }
+    }
 }
 
 pub struct Body {
@@ -131,7 +143,6 @@ impl Body {
         overlaps(mask, cx, cy + 1)
     }
 
-    /// A solid that moves into the body lifts it to the nearest free row above.
     fn depenetrate(&mut self, mask: &Mask) {
         let (cx, cy) = self.cell();
         if !overlaps(mask, cx, cy) {

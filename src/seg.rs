@@ -31,6 +31,12 @@ impl Mask {
     }
 }
 
+enum State {
+    Empty,
+    Capturing(Vec<Vec<u8>>),
+    Ready(Vec<Model>),
+}
+
 struct Model {
     rgb: [f32; 3],
     chroma_tolerance: f32,
@@ -39,9 +45,9 @@ struct Model {
 pub struct Segmenter {
     width: usize,
     height: usize,
-    background: Option<Vec<Model>>,
-    captured: Vec<Vec<u8>>,
+    state: State,
     raw: Vec<u8>,
+    ratios: Vec<f32>,
     scratch: Vec<u8>,
     pub mask: Mask,
 }
@@ -51,46 +57,43 @@ impl Segmenter {
         Self {
             width,
             height,
-            background: None,
-            captured: Vec::new(),
+            state: State::Empty,
             raw: vec![0; width * height],
+            ratios: Vec::new(),
             scratch: vec![0; width * height],
             mask: Mask::empty(width, height),
         }
     }
 
     pub fn has_background(&self) -> bool {
-        self.background.is_some()
+        matches!(self.state, State::Ready(_))
     }
 
     pub fn begin_capture(&mut self) {
-        self.captured.clear();
-        self.background = None;
+        self.state = State::Capturing(Vec::with_capacity(CAPTURE_FRAMES));
         self.mask.cells.fill(false);
     }
 
-    pub fn capturing(&self) -> bool {
-        self.background.is_none() && !self.captured.is_empty()
-    }
-
     pub fn add_capture_frame(&mut self, rgba: &[u8]) -> bool {
-        self.captured.push(rgba.to_vec());
-        if self.captured.len() < CAPTURE_FRAMES {
+        let State::Capturing(captured) = &mut self.state else {
+            return self.has_background();
+        };
+        captured.push(rgba.to_vec());
+        if captured.len() < CAPTURE_FRAMES {
             return false;
         }
         let mut channel = [0u8; CAPTURE_FRAMES];
         let background = (0..self.width * self.height)
             .map(|i| {
                 let rgb = std::array::from_fn(|c| {
-                    for (slot, frame) in channel.iter_mut().zip(&self.captured) {
+                    for (slot, frame) in channel.iter_mut().zip(captured.iter()) {
                         *slot = frame[i * 4 + c];
                     }
                     channel.sort_unstable();
                     channel[CAPTURE_FRAMES / 2] as f32
                 });
                 let centre = chroma(rgb);
-                let spread = self
-                    .captured
+                let spread = captured
                     .iter()
                     .map(|f| chroma_shift(chroma(pixel(f, i)), centre))
                     .sum::<f32>()
@@ -101,17 +104,16 @@ impl Segmenter {
                 }
             })
             .collect();
-        self.background = Some(background);
-        self.captured.clear();
+        self.state = State::Ready(background);
         true
     }
 
     pub fn segment(&mut self, rgba: &[u8]) {
-        let Some(background) = self.background.as_mut() else {
+        let State::Ready(background) = &mut self.state else {
             self.mask.cells.fill(false);
             return;
         };
-        let gain = global_gain(rgba, background);
+        let gain = global_gain(rgba, background, &mut self.ratios);
         for (i, model) in background.iter_mut().enumerate() {
             let px = pixel(rgba, i);
             let solid = differs(
@@ -126,34 +128,15 @@ impl Segmenter {
                 }
             }
         }
-        morph(
-            &mut self.raw,
-            &mut self.scratch,
-            self.width,
-            self.height,
-            Op::Erode,
-        );
-        morph(
-            &mut self.raw,
-            &mut self.scratch,
-            self.width,
-            self.height,
-            Op::Dilate,
-        );
-        morph(
-            &mut self.raw,
-            &mut self.scratch,
-            self.width,
-            self.height,
-            Op::Dilate,
-        );
-        morph(
-            &mut self.raw,
-            &mut self.scratch,
-            self.width,
-            self.height,
-            Op::Erode,
-        );
+        for op in [Op::Erode, Op::Dilate, Op::Dilate, Op::Erode] {
+            morph(
+                &mut self.raw,
+                &mut self.scratch,
+                self.width,
+                self.height,
+                op,
+            );
+        }
         for (cell, &r) in self.mask.cells.iter_mut().zip(&self.raw) {
             *cell = r != 0;
         }
@@ -163,13 +146,15 @@ impl Segmenter {
 /// A lighting change scales every background pixel by roughly the same factor,
 /// so the median luma ratio over the frame recovers it while foreground stays
 /// a minority.
-fn global_gain(rgba: &[u8], background: &[Model]) -> f32 {
-    let mut ratios: Vec<f32> = background
-        .iter()
-        .enumerate()
-        .step_by(7)
-        .map(|(i, model)| luma_ratio(pixel(rgba, i), model.rgb))
-        .collect();
+fn global_gain(rgba: &[u8], background: &[Model], ratios: &mut Vec<f32>) -> f32 {
+    ratios.clear();
+    ratios.extend(
+        background
+            .iter()
+            .enumerate()
+            .step_by(7)
+            .map(|(i, model)| luma_ratio(pixel(rgba, i), model.rgb)),
+    );
     if ratios.is_empty() {
         return 1.0;
     }

@@ -1,20 +1,26 @@
-// The derive macros name bevy_ecs directly when bevy is only a target-specific dependency.
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::ScalingMode;
+// The derive macros name bevy_ecs directly when bevy is only a target-specific dependency.
 use bevy::ecs as bevy_ecs;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use perch::body::{self, Body, Input, Pose};
+use perch::body::{self, Body, Input};
 use perch::seg::Segmenter;
-use perch::sprite;
+use perch::sprite::{self, Frame};
 
 use crate::webcam::{Surface, Webcam};
 
 const MASK: (u32, u32) = (240, 180);
-const DISPLAY: (u32, u32) = (640, 480);
 const COUNTDOWN: f32 = 3.0;
-const TINT: [u8; 4] = [70, 230, 255, 70];
-const EDGE: [u8; 4] = [200, 250, 255, 220];
+const STALL: f32 = 3.0;
+const TINT: [u8; 4] = [70, 230, 255, 26];
+const EDGE: [u8; 4] = [200, 250, 255, 160];
+const JUMP_KEYS: [KeyCode; 4] = [
+    KeyCode::Space,
+    KeyCode::ArrowUp,
+    KeyCode::KeyW,
+    KeyCode::KeyZ,
+];
 
 pub fn run() {
     App::new()
@@ -25,58 +31,51 @@ pub fn run() {
                         canvas: Some("#perch".into()),
                         fit_canvas_to_parent: true,
                         prevent_default_event_handling: true,
+                        transparent: true,
                         ..default()
                     }),
                     ..default()
                 })
                 .set(ImagePlugin::default_nearest()),
         )
-        .insert_resource(ClearColor(Color::srgb(0.08, 0.08, 0.09)))
-        .insert_non_send(Feed {
+        .insert_resource(ClearColor(Color::NONE))
+        .insert_non_send(Camera {
             webcam: Webcam::start(),
-            display: Surface::new(DISPLAY.0, DISPLAY.1),
-            small: Surface::new(MASK.0, MASK.1),
-            buf: Vec::new(),
+            surface: Surface::new(MASK.0, MASK.1),
+            last_frame: 0.0,
         })
-        .insert_resource(Play {
+        .insert_resource(Game {
             seg: Segmenter::new(MASK.0 as usize, MASK.1 as usize),
-            body: None,
             phase: Phase::WaitingCamera,
-            run_clock: 0.0,
         })
         .add_systems(Startup, setup)
         .add_systems(Update, (feed, control, hint).chain())
         .run();
 }
 
-struct Feed {
+struct Camera {
     webcam: Webcam,
-    display: Surface,
-    small: Surface,
-    buf: Vec<u8>,
+    surface: Surface,
+    last_frame: f32,
 }
 
-#[derive(Clone, Copy, PartialEq)]
 enum Phase {
     WaitingCamera,
     Countdown { until: f32 },
     Capturing,
-    Playing,
+    Playing { body: Body, anim_clock: f32 },
 }
 
 #[derive(Resource)]
-struct Play {
+struct Game {
     seg: Segmenter,
-    body: Option<Body>,
     phase: Phase,
-    run_clock: f32,
 }
 
 #[derive(Resource)]
 struct Art {
-    display: Handle<Image>,
     mask: Handle<Image>,
-    poses: [Handle<Image>; 5],
+    frames: [Handle<Image>; Frame::ALL.len()],
 }
 
 #[derive(Component)]
@@ -108,143 +107,108 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         }),
     ));
     let size = Vec2::new(MASK.0 as f32, MASK.1 as f32);
-    let blank = |w: u32, h: u32| image(w, h, vec![0; (w * h * 4) as usize]);
-    let display = images.add(blank(DISPLAY.0, DISPLAY.1));
-    let mask = images.add(blank(MASK.0, MASK.1));
+    let mask = images.add(image(
+        MASK.0,
+        MASK.1,
+        vec![0; (MASK.0 * MASK.1 * 4) as usize],
+    ));
     let (sw, sh) = (sprite::SIZE.0 as u32, sprite::SIZE.1 as u32);
-    let poses = [
-        (Pose::Idle, false),
-        (Pose::Run, true),
-        (Pose::Run, false),
-        (Pose::Jump, false),
-        (Pose::Fall, false),
-    ]
-    .map(|(p, phase)| images.add(image(sw, sh, sprite::frame(p, phase))));
-    commands.spawn((
-        Sprite {
-            image: display.clone(),
-            custom_size: Some(size),
-            ..default()
-        },
-        Transform::from_xyz(0.0, 0.0, 0.0),
-    ));
-    commands.spawn((
-        Sprite {
-            image: mask.clone(),
-            custom_size: Some(size),
-            ..default()
-        },
-        Transform::from_xyz(0.0, 0.0, 1.0),
-    ));
+    let frames = Frame::ALL.map(|f| images.add(image(sw, sh, sprite::pixels(f))));
+    commands.spawn(Sprite {
+        image: mask.clone(),
+        custom_size: Some(size),
+        ..default()
+    });
     commands.spawn((
         Player,
         Sprite {
-            image: poses[0].clone(),
+            image: frames[0].clone(),
             custom_size: Some(Vec2::new(body::WIDTH as f32, body::HEIGHT as f32)),
             ..default()
         },
         Transform::from_xyz(0.0, 0.0, 2.0),
         Visibility::Hidden,
     ));
-    commands.insert_resource(Art {
-        display,
-        mask,
-        poses,
-    });
+    commands.insert_resource(Art { mask, frames });
 }
 
 fn feed(
-    mut feed: NonSendMut<Feed>,
-    mut play: ResMut<Play>,
+    mut camera: NonSendMut<Camera>,
+    mut game: ResMut<Game>,
     art: Res<Art>,
     mut images: ResMut<Assets<Image>>,
     time: Res<Time>,
 ) {
     let now = time.elapsed_secs();
-    if !feed.webcam.new_frame() {
+    if !camera.webcam.new_frame() {
         return;
     }
-    if play.phase == Phase::WaitingCamera {
-        play.phase = Phase::Countdown {
-            until: now + COUNTDOWN,
-        };
-    }
-    let Feed {
-        webcam,
-        display,
-        small,
-        buf,
-    } = &mut *feed;
+    camera.last_frame = now;
+    let frame = camera.webcam.read(&camera.surface);
 
-    webcam.read(display, buf);
-    if let Some(mut img) = images.get_mut(&art.display) {
-        img.data = Some(buf.clone());
-    }
-
-    webcam.read(small, buf);
-    match play.phase {
-        Phase::Countdown { until } if now >= until => {
-            play.seg.begin_capture();
-            play.seg.add_capture_frame(buf);
-            play.phase = Phase::Capturing;
-        }
-        Phase::Capturing => {
-            if play.seg.add_capture_frame(buf) {
-                play.phase = Phase::Playing;
-                play.body = Some(Body::spawn(&play.seg.mask));
+    let Game { seg, phase } = &mut *game;
+    match phase {
+        Phase::WaitingCamera => {
+            *phase = Phase::Countdown {
+                until: now + COUNTDOWN,
             }
         }
-        Phase::Playing => play.seg.segment(buf),
-        _ => {}
+        Phase::Countdown { until } if now >= *until => {
+            seg.begin_capture();
+            seg.add_capture_frame(&frame);
+            *phase = Phase::Capturing;
+        }
+        Phase::Countdown { .. } => {}
+        Phase::Capturing => {
+            if seg.add_capture_frame(&frame) {
+                *phase = Phase::Playing {
+                    body: Body::spawn(&seg.mask),
+                    anim_clock: 0.0,
+                };
+            }
+        }
+        Phase::Playing { .. } => seg.segment(&frame),
     }
 
-    if let Some(mut img) = images.get_mut(&art.mask) {
-        let mask = &play.seg.mask;
-        let tinted = (0..mask.height as i32)
-            .flat_map(|y| (0..mask.width as i32).map(move |x| (x, y)))
-            .flat_map(|(x, y)| match (mask.solid(x, y), mask.solid(x, y - 1)) {
+    if let Some(mut img) = images.get_mut(&art.mask)
+        && let Some(data) = img.data.as_mut()
+    {
+        let mask = &seg.mask;
+        for (i, px) in data.chunks_exact_mut(4).enumerate() {
+            let (x, y) = ((i % mask.width) as i32, (i / mask.width) as i32);
+            px.copy_from_slice(&match (mask.solid(x, y), mask.solid(x, y - 1)) {
                 (true, false) => EDGE,
                 (true, true) => TINT,
                 _ => [0; 4],
-            })
-            .collect();
-        img.data = Some(tinted);
+            });
+        }
     }
 }
 
 fn control(
-    mut play: ResMut<Play>,
+    mut game: ResMut<Game>,
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
     art: Res<Art>,
     time: Res<Time>,
     mut player: Single<(&mut Transform, &mut Sprite, &mut Visibility), With<Player>>,
 ) {
-    let any_key = |k: &[KeyCode]| keys.any_pressed(k.iter().copied());
-    let any_new = |k: &[KeyCode]| keys.any_just_pressed(k.iter().copied());
+    let held = |k: &[KeyCode]| keys.any_pressed(k.iter().copied());
     let mut input = Input {
-        run: any_key(&[KeyCode::ArrowRight, KeyCode::KeyD]) as i8 as f32
-            - any_key(&[KeyCode::ArrowLeft, KeyCode::KeyA]) as i8 as f32,
-        jump_pressed: any_new(&[
-            KeyCode::Space,
-            KeyCode::ArrowUp,
-            KeyCode::KeyW,
-            KeyCode::KeyZ,
-        ]),
-        jump_held: any_key(&[
-            KeyCode::Space,
-            KeyCode::ArrowUp,
-            KeyCode::KeyW,
-            KeyCode::KeyZ,
-        ]),
+        run: held(&[KeyCode::ArrowRight, KeyCode::KeyD]) as i8 as f32
+            - held(&[KeyCode::ArrowLeft, KeyCode::KeyA]) as i8 as f32,
+        jump_pressed: keys.any_just_pressed(JUMP_KEYS),
+        jump_held: held(&JUMP_KEYS),
     };
     let mut recapture = keys.just_pressed(KeyCode::KeyB);
     for pad in &pads {
         let stick = pad.left_stick().x;
         let dpad = pad.pressed(GamepadButton::DPadRight) as i8 as f32
             - pad.pressed(GamepadButton::DPadLeft) as i8 as f32;
-        if stick.abs() > 0.25 || dpad != 0.0 {
-            input.run = if dpad != 0.0 { dpad } else { stick };
+        if dpad != 0.0 {
+            input.run = dpad;
+        } else if stick.abs() > 0.25 {
+            input.run = stick;
         }
         input.jump_pressed |= pad.just_pressed(GamepadButton::South);
         input.jump_held |= pad.pressed(GamepadButton::South);
@@ -252,55 +216,47 @@ fn control(
             pad.just_pressed(GamepadButton::East) || pad.just_pressed(GamepadButton::Select);
     }
 
-    let now = time.elapsed_secs();
-    if recapture && matches!(play.phase, Phase::Playing | Phase::Capturing) {
-        play.phase = Phase::Countdown {
-            until: now + COUNTDOWN,
+    let Game { seg, phase } = &mut *game;
+    if recapture && matches!(phase, Phase::Playing { .. } | Phase::Capturing) {
+        seg.begin_capture();
+        *phase = Phase::Countdown {
+            until: time.elapsed_secs() + COUNTDOWN,
         };
-        play.body = None;
     }
 
     let (transform, sprite, visibility) = &mut *player;
-    let Play {
-        seg,
-        body,
-        run_clock,
-        ..
-    } = &mut *play;
-    let Some(body) = body else {
+    let Phase::Playing { body, anim_clock } = phase else {
         **visibility = Visibility::Hidden;
         return;
     };
     body.step(&seg.mask, input, time.delta_secs());
-    *run_clock += time.delta_secs();
-    let pose = body.pose();
-    let stride = ((*run_clock * 8.0) as u32).is_multiple_of(2);
-    sprite.image = art.poses[match pose {
-        Pose::Idle => 0,
-        Pose::Run if stride => 1,
-        Pose::Run => 2,
-        Pose::Jump => 3,
-        Pose::Fall => 4,
-    }]
-    .clone();
+    *anim_clock += time.delta_secs();
+    let stride = ((*anim_clock * 8.0) as u32).is_multiple_of(2);
+    let frame = body.pose().frame(stride);
+    sprite.image = art.frames[Frame::ALL.iter().position(|&f| f == frame).unwrap()].clone();
     sprite.flip_x = body.facing_left;
     **visibility = Visibility::Visible;
     transform.translation.x = body.x.round() + body::WIDTH as f32 / 2.0 - MASK.0 as f32 / 2.0;
     transform.translation.y = MASK.1 as f32 / 2.0 - body.y.round() - body::HEIGHT as f32 / 2.0;
 }
 
-fn hint(play: Res<Play>, feed: NonSend<Feed>, time: Res<Time>, mut shown: Local<String>) {
-    let text = match (feed.webcam.failure(), play.phase) {
-        (Some(why), _) => why,
-        (None, Phase::WaitingCamera) => String::new(),
-        (None, Phase::Countdown { until }) => {
-            format!(
-                "Step out of view · {}",
-                (until - time.elapsed_secs()).ceil().max(1.0)
-            )
+fn hint(game: Res<Game>, camera: NonSend<Camera>, time: Res<Time>, mut shown: Local<String>) {
+    let now = time.elapsed_secs();
+    let text = if let Some(why) = camera.webcam.failure() {
+        why
+    } else if camera.webcam.waiting() {
+        "Allow the camera to play".into()
+    } else if !matches!(game.phase, Phase::WaitingCamera) && now - camera.last_frame > STALL {
+        "The camera stopped sending video. Reload to retry.".into()
+    } else {
+        match game.phase {
+            Phase::WaitingCamera => String::new(),
+            Phase::Countdown { until } => {
+                format!("Step out of view · {}", (until - now).ceil().max(1.0))
+            }
+            Phase::Capturing => "Hold still".into(),
+            Phase::Playing { .. } => "B: recapture the empty scene".into(),
         }
-        (None, Phase::Capturing) => "Hold still".into(),
-        (None, Phase::Playing) => "B: recapture the empty scene".into(),
     };
     if *shown != text {
         if let Some(el) = web_sys::window()

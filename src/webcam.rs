@@ -25,9 +25,10 @@ pub struct Surface {
 impl Webcam {
     pub fn start() -> Self {
         let document = web_sys::window().unwrap().document().unwrap();
-        let video: HtmlVideoElement = document.create_element("video").unwrap().unchecked_into();
-        video.set_muted(true);
-        video.set_attribute("playsinline", "").unwrap();
+        let video: HtmlVideoElement = document
+            .get_element_by_id("camera")
+            .unwrap()
+            .unchecked_into();
         let status = Rc::new(RefCell::new(Status::Waiting));
         let (v, s) = (video.clone(), status.clone());
         wasm_bindgen_futures::spawn_local(async move {
@@ -44,6 +45,10 @@ impl Webcam {
         }
     }
 
+    pub fn waiting(&self) -> bool {
+        matches!(*self.status.borrow(), Status::Waiting)
+    }
+
     pub fn failure(&self) -> Option<String> {
         match &*self.status.borrow() {
             Status::Failed(why) => Some(why.clone()),
@@ -51,7 +56,6 @@ impl Webcam {
         }
     }
 
-    /// True when the video has a frame the game has not read yet.
     pub fn new_frame(&mut self) -> bool {
         if !matches!(*self.status.borrow(), Status::Live) || self.video.ready_state() < 2 {
             return false;
@@ -64,9 +68,7 @@ impl Webcam {
         true
     }
 
-    /// Mirrored and centre-cropped to the surface's aspect, so the player moves
-    /// on screen the way they move in a mirror.
-    pub fn read(&self, surface: &Surface, into: &mut Vec<u8>) {
+    pub fn read(&self, surface: &Surface) -> Vec<u8> {
         let (vw, vh) = (
             self.video.video_width() as f64,
             self.video.video_height() as f64,
@@ -91,9 +93,7 @@ impl Webcam {
             h,
         )
         .unwrap();
-        let data = ctx.get_image_data(0.0, 0.0, w, h).unwrap().data();
-        into.clear();
-        into.extend_from_slice(&data);
+        ctx.get_image_data(0.0, 0.0, w, h).unwrap().data().0
     }
 }
 
@@ -141,7 +141,7 @@ fn describe(e: &JsValue) -> String {
         "NotAllowedError" | "SecurityError" => {
             "Camera access was blocked. Allow it for this page and reload.".into()
         }
-        "NotFoundError" | "OverconstrainedError" => "No camera found.".into(),
+        "NotFoundError" => "No camera found.".into(),
         "NotReadableError" => "The camera is busy in another app.".into(),
         _ => format!("Camera unavailable: {}", e.as_string().unwrap_or(name)),
     }

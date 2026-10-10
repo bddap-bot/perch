@@ -1,5 +1,5 @@
 {
-  "about": "Touched-path to test-suite map, read by `botq test-map`. First matching rule wins. `tests: []` means consciously untested and carries its why. Commands run from the repo root.",
+  "about": "Each touched path maps to the commands that must pass before it lands. First matching rule wins. `tests: []` means consciously untested and carries its why. Commands run from the repo root.",
   "rules": [
     {
       "paths": [

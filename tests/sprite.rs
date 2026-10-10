@@ -1,11 +1,8 @@
-use perch::body::Pose;
-use perch::sprite::{SIZE, frame};
+use perch::sprite::{Frame, SIZE, pixels};
 
 #[test]
-fn every_pose_is_a_full_frame() {
-    for pose in [Pose::Idle, Pose::Run, Pose::Jump, Pose::Fall] {
-        for phase in [false, true] {
-            assert_eq!(frame(pose, phase).len(), SIZE.0 * SIZE.1 * 4);
-        }
+fn every_frame_is_full_size() {
+    for frame in Frame::ALL {
+        assert_eq!(pixels(frame).len(), SIZE.0 * SIZE.1 * 4);
     }
 }
