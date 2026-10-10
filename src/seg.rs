@@ -10,6 +10,10 @@ const HIGHLIGHT_CEIL: f32 = 1.45;
 const TEXTURE_FLOOR: f32 = 0.05;
 const TEXTURE_SPREAD: f32 = 3.0;
 const ADAPT_RATE: f32 = 0.03;
+const RISE: u8 = 2;
+const FALL: u8 = 3;
+const MIN_SOLID: usize = 30;
+const MAX_HOLE: usize = 50;
 
 pub struct Mask {
     pub width: usize,
@@ -58,6 +62,9 @@ pub struct Segmenter {
     blur: Vec<f32>,
     ratios: Vec<f32>,
     scratch: Vec<u8>,
+    held: Vec<bool>,
+    run: Vec<u8>,
+    region: Vec<usize>,
     pub mask: Mask,
 }
 
@@ -74,6 +81,9 @@ impl Segmenter {
             blur: vec![0.0; width * height],
             ratios: Vec::new(),
             scratch: vec![0; width * height],
+            held: vec![false; width * height],
+            run: vec![0; width * height],
+            region: Vec::new(),
             mask: Mask::empty(width, height),
         }
     }
@@ -85,6 +95,8 @@ impl Segmenter {
     pub fn begin_capture(&mut self) {
         self.state = State::Capturing(Vec::with_capacity(CAPTURE_FRAMES));
         self.mask.cells.fill(false);
+        self.held.fill(false);
+        self.run.fill(0);
     }
 
     pub fn add_capture_frame(&mut self, rgba: &[u8]) -> bool {
@@ -176,20 +188,44 @@ impl Segmenter {
         ] {
             morph(&mut self.textured, &mut self.scratch, w, h, op);
         }
-        for (r, &t) in self.raw.iter_mut().zip(&self.textured) {
-            *r |= t;
+        for (i, &t) in self.textured.iter().enumerate() {
+            let fg = self.raw[i] | t != 0;
+            if fg == self.held[i] {
+                self.run[i] = 0;
+            } else {
+                self.run[i] += 1;
+                if self.run[i] >= if fg { RISE } else { FALL } {
+                    self.held[i] = fg;
+                    self.run[i] = 0;
+                }
+            }
+            self.raw[i] = self.held[i] as u8;
         }
-        for op in [Op::Erode, Op::Dilate, Op::Dilate, Op::Erode] {
-            morph(
-                &mut self.raw,
-                &mut self.scratch,
-                self.width,
-                self.height,
-                op,
-            );
+        for op in [Op::Erode, Op::Dilate] {
+            morph(&mut self.raw, &mut self.scratch, w, h, op);
         }
         for (cell, &r) in self.mask.cells.iter_mut().zip(&self.raw) {
             *cell = r != 0;
+        }
+        let cells = &mut self.mask.cells;
+        for solid in [true, false] {
+            self.scratch.fill(0);
+            for i in 0..w * h {
+                if self.scratch[i] != 0 || cells[i] != solid {
+                    continue;
+                }
+                let touches_edge = flood(cells, &mut self.scratch, &mut self.region, w, h, i);
+                let small = if solid {
+                    self.region.len() < MIN_SOLID
+                } else {
+                    !touches_edge && self.region.len() < MAX_HOLE
+                };
+                if small {
+                    for &j in &self.region {
+                        cells[j] = !solid;
+                    }
+                }
+            }
         }
     }
 }
@@ -280,6 +316,55 @@ fn chroma_shift(a: [f32; 3], b: [f32; 3]) -> f32 {
 
 fn luma_ratio(px: [f32; 3], bg: [f32; 3]) -> f32 {
     (px[0] + px[1] + px[2] + LUMA_BIAS) / (bg[0] + bg[1] + bg[2] + LUMA_BIAS)
+}
+
+/// Solid regions join diagonally and gaps do not, so a thin diagonal limb
+/// stays one region and a gap sealed at a corner still counts as enclosed.
+fn flood(
+    cells: &[bool],
+    seen: &mut [u8],
+    region: &mut Vec<usize>,
+    w: usize,
+    h: usize,
+    start: usize,
+) -> bool {
+    let value = cells[start];
+    region.clear();
+    region.push(start);
+    seen[start] = 1;
+    let mut edge = false;
+    let mut next = 0;
+    while let Some(&i) = region.get(next) {
+        next += 1;
+        let (x, y) = (i % w, i / w);
+        edge |= x == 0 || y == 0 || x + 1 == w || y + 1 == h;
+        for (dx, dy) in [
+            (-1, -1),
+            (0, -1),
+            (1, -1),
+            (-1, 0),
+            (1, 0),
+            (-1, 1),
+            (0, 1),
+            (1, 1),
+        ] {
+            let (nx, ny) = (x as isize + dx, y as isize + dy);
+            if (dx != 0 && dy != 0 && !value)
+                || nx < 0
+                || ny < 0
+                || nx >= w as isize
+                || ny >= h as isize
+            {
+                continue;
+            }
+            let j = ny as usize * w + nx as usize;
+            if seen[j] == 0 && cells[j] == value {
+                seen[j] = 1;
+                region.push(j);
+            }
+        }
+    }
+    edge
 }
 
 #[derive(Clone, Copy)]

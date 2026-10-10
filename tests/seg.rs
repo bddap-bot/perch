@@ -99,6 +99,21 @@ fn captured(scene: &mut Scene) -> Segmenter {
     seg
 }
 
+fn around(outer: Rect, inner: Rect) -> [Rect; 4] {
+    [
+        (outer.0, outer.1, outer.2, inner.1),
+        (outer.0, inner.3, outer.2, outer.3),
+        (outer.0, inner.1, inner.0, inner.3),
+        (inner.2, inner.1, outer.2, inner.3),
+    ]
+}
+
+fn settle(seg: &mut Segmenter, scene: &mut Scene) {
+    for _ in 0..4 {
+        seg.segment(&scene.frame());
+    }
+}
+
 fn coverage(seg: &Segmenter, r: Rect) -> f32 {
     let mut hit = 0;
     for y in r.1..r.3 {
@@ -131,7 +146,7 @@ fn nothing_is_solid_before_capture() {
     let mut scene = Scene::new();
     let mut seg = Segmenter::new(W, H);
     scene.objects.push(((10, 10, 50, 50), [250.0, 20.0, 20.0]));
-    seg.segment(&scene.frame());
+    settle(&mut seg, &mut scene);
     assert!(seg.mask.cells.iter().all(|&s| !s));
 }
 
@@ -151,7 +166,7 @@ fn global_lighting_shift_stays_empty() {
         let mut scene = Scene::new();
         let mut seg = captured(&mut scene);
         scene.gain = [gain; 3];
-        seg.segment(&scene.frame());
+        settle(&mut seg, &mut scene);
         assert!(
             outside(&seg, &[]) < 0.002,
             "gain {gain}: {}",
@@ -192,11 +207,11 @@ fn a_large_object_survives_a_white_balance_shift() {
 
 #[test]
 fn cast_shadow_is_not_solid() {
-    let mut scene = Scene::new();
-    let mut seg = captured(&mut scene);
-    for penumbra in [0.0, 3.0, 6.0] {
+    for penumbra in [0.0, 1.5, 3.0, 6.0] {
+        let mut scene = Scene::new();
+        let mut seg = captured(&mut scene);
         scene.shadow = Some(((40, 60, 140, 150), penumbra));
-        seg.segment(&scene.frame());
+        settle(&mut seg, &mut scene);
         assert!(
             outside(&seg, &[]) < 0.002,
             "penumbra {penumbra}: {}",
@@ -213,7 +228,7 @@ fn placed_objects_become_solid() {
     let arm = (100, 40, 200, 60);
     scene.objects.push((book, [200.0, 40.0, 40.0]));
     scene.objects.push((arm, [210.0, 160.0, 130.0]));
-    seg.segment(&scene.frame());
+    settle(&mut seg, &mut scene);
     assert!(coverage(&seg, book) > 0.95, "{}", coverage(&seg, book));
     assert!(coverage(&seg, arm) > 0.9, "{}", coverage(&seg, arm));
     assert!(outside(&seg, &[book, arm]) < 0.002);
@@ -226,7 +241,7 @@ fn dark_object_on_light_wall_is_solid_despite_matching_chroma() {
     let r = (120, 10, 150, 40);
     let wall = room(130, 20);
     scene.objects.push((r, wall.map(|v| v * 0.3)));
-    seg.segment(&scene.frame());
+    settle(&mut seg, &mut scene);
     assert!(coverage(&seg, r) > 0.9, "{}", coverage(&seg, r));
 }
 
@@ -236,9 +251,7 @@ fn a_textured_object_the_colour_of_the_wall_is_solid() {
     let mut seg = captured(&mut scene);
     let r = (60, 110, 110, 150);
     scene.camouflage = Some(r);
-    for _ in 0..5 {
-        seg.segment(&scene.frame());
-    }
+    settle(&mut seg, &mut scene);
     assert!(coverage(&seg, r) > 0.9, "{}", coverage(&seg, r));
     assert!(outside(&seg, &[r]) < 0.002, "{}", outside(&seg, &[r]));
 }
@@ -272,6 +285,7 @@ fn a_moving_object_leaves_no_trail() {
         scene.objects = vec![(r, [30.0, 200.0, 220.0])];
         seg.segment(&scene.frame());
     }
+    settle(&mut seg, &mut scene);
     assert!(coverage(&seg, r) > 0.95);
     assert!(outside(&seg, &[r]) < 0.002, "{}", outside(&seg, &[r]));
 }
@@ -282,9 +296,87 @@ fn recapture_absorbs_what_was_placed() {
     let mut seg = captured(&mut scene);
     let r = (30, 30, 70, 60);
     scene.objects.push((r, [40.0, 180.0, 60.0]));
-    seg.segment(&scene.frame());
+    settle(&mut seg, &mut scene);
     assert!(coverage(&seg, r) > 0.95);
     seg = captured(&mut scene);
-    seg.segment(&scene.frame());
+    settle(&mut seg, &mut scene);
     assert!(coverage(&seg, r) < 0.01);
+}
+
+#[test]
+fn a_one_frame_speck_is_never_a_platform() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let speck = (100, 100, 110, 110);
+    settle(&mut seg, &mut scene);
+    scene.objects.push((speck, [250.0, 250.0, 30.0]));
+    seg.segment(&scene.frame());
+    scene.objects.clear();
+    for _ in 0..4 {
+        assert!(coverage(&seg, speck) == 0.0, "{}", coverage(&seg, speck));
+        seg.segment(&scene.frame());
+    }
+}
+
+#[test]
+fn solid_needs_two_frames_and_clearing_needs_three() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let r = (100, 100, 130, 130);
+    scene.objects.push((r, [250.0, 250.0, 30.0]));
+    seg.segment(&scene.frame());
+    assert!(coverage(&seg, r) == 0.0, "{}", coverage(&seg, r));
+    seg.segment(&scene.frame());
+    assert!(coverage(&seg, r) > 0.95, "{}", coverage(&seg, r));
+    scene.objects.clear();
+    for _ in 0..2 {
+        seg.segment(&scene.frame());
+        assert!(coverage(&seg, r) > 0.95, "{}", coverage(&seg, r));
+    }
+    seg.segment(&scene.frame());
+    assert!(coverage(&seg, r) == 0.0, "{}", coverage(&seg, r));
+}
+
+#[test]
+fn specks_too_small_to_stand_on_are_dropped() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let speck = (100, 100, 105, 105);
+    let ledge = (40, 40, 46, 45);
+    scene.objects.push((speck, [250.0, 250.0, 30.0]));
+    scene.objects.push((ledge, [250.0, 250.0, 30.0]));
+    settle(&mut seg, &mut scene);
+    assert!(coverage(&seg, speck) == 0.0, "{}", coverage(&seg, speck));
+    assert!(coverage(&seg, ledge) > 0.95, "{}", coverage(&seg, ledge));
+}
+
+#[test]
+fn a_hole_too_small_for_the_bird_is_filled_even_around_a_speck() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let body = (60, 40, 140, 140);
+    let hole = (90, 70, 97, 77);
+    let wall = room(93, 73);
+    let luma = wall[0] + wall[1] + wall[2];
+    let same_luma = [luma - 200.0, 100.0, 100.0];
+    for part in around(body, hole) {
+        scene.objects.push((part, same_luma));
+    }
+    scene.objects.push(((92, 72, 95, 75), same_luma));
+    settle(&mut seg, &mut scene);
+    assert!(coverage(&seg, hole) == 1.0, "{}", coverage(&seg, hole));
+    assert!(coverage(&seg, body) > 0.9, "{}", coverage(&seg, body));
+}
+
+#[test]
+fn a_pocket_the_bird_fits_in_stays_open() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let hands = (60, 40, 140, 140);
+    let pocket = (90, 70, 102, 82);
+    for part in around(hands, pocket) {
+        scene.objects.push((part, [40.0, 50.0, 70.0]));
+    }
+    settle(&mut seg, &mut scene);
+    assert!(coverage(&seg, pocket) == 0.0, "{}", coverage(&seg, pocket));
 }
