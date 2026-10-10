@@ -37,7 +37,7 @@ fn room(x: usize, y: usize) -> [f32; 3] {
 
 struct Scene {
     noise: Noise,
-    gain: f32,
+    gain: [f32; 3],
     shadow: Option<Rect>,
     objects: Vec<(Rect, [f32; 3])>,
 }
@@ -46,7 +46,7 @@ impl Scene {
     fn new() -> Self {
         Self {
             noise: Noise(7),
-            gain: 1.0,
+            gain: [1.0; 3],
             shadow: None,
             objects: Vec::new(),
         }
@@ -68,9 +68,9 @@ impl Scene {
                 } else {
                     1.0
                 };
-                for v in c {
+                for (v, gain) in c.into_iter().zip(self.gain) {
                     let n = self.noise.next() * 10.0;
-                    out.push((v * self.gain * shade + n).clamp(0.0, 255.0) as u8);
+                    out.push((v * gain * shade + n).clamp(0.0, 255.0) as u8);
                 }
                 out.push(255);
             }
@@ -141,11 +141,27 @@ fn global_lighting_shift_stays_empty() {
     for gain in [0.6, 0.8, 1.25, 1.4] {
         let mut scene = Scene::new();
         let mut seg = captured(&mut scene);
-        scene.gain = gain;
+        scene.gain = [gain; 3];
         seg.segment(&scene.frame());
         assert!(
             outside(&seg, &[]) < 0.002,
             "gain {gain}: {}",
+            outside(&seg, &[])
+        );
+    }
+}
+
+#[test]
+fn exposure_and_white_balance_ramp_is_not_foreground() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    for step in 1..=30 {
+        let t = step as f32 / 30.0;
+        scene.gain = [1.0 - 0.45 * t, 1.0 - 0.3 * t, 1.0 - 0.1 * t];
+        seg.segment(&scene.frame());
+        assert!(
+            outside(&seg, &[]) < 0.002,
+            "step {step}: {}",
             outside(&seg, &[])
         );
     }

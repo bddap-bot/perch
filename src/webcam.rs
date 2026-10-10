@@ -1,8 +1,19 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, HtmlVideoElement, MediaStream};
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, HtmlVideoElement};
+
+#[wasm_bindgen(module = "/web/camera.js")]
+extern "C" {
+    #[wasm_bindgen(js_name = openCamera)]
+    fn open_camera(video: &HtmlVideoElement) -> js_sys::Promise;
+    #[wasm_bindgen(js_name = holdCamera)]
+    fn hold_camera(video: &HtmlVideoElement, hold: bool) -> js_sys::Promise;
+}
 
 pub enum Status {
     Waiting,
@@ -32,8 +43,8 @@ impl Webcam {
         let status = Rc::new(RefCell::new(Status::Waiting));
         let (v, s) = (video.clone(), status.clone());
         wasm_bindgen_futures::spawn_local(async move {
-            let next = match open(&v).await {
-                Ok(()) => Status::Live,
+            let next = match wasm_bindgen_futures::JsFuture::from(open_camera(&v)).await {
+                Ok(_) => Status::Live,
                 Err(e) => Status::Failed(describe(&e)),
             };
             *s.borrow_mut() = next;
@@ -54,6 +65,17 @@ impl Webcam {
             Status::Failed(why) => Some(why.clone()),
             _ => None,
         }
+    }
+
+    pub fn hold(&self, on: bool) -> Arc<AtomicBool> {
+        let settled = Arc::new(AtomicBool::new(false));
+        let promise = hold_camera(&self.video, on);
+        let flag = settled.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+            flag.store(true, Ordering::Relaxed);
+        });
+        settled
     }
 
     pub fn new_frame(&mut self) -> bool {
@@ -112,24 +134,6 @@ impl Surface {
             .unchecked_into();
         Self { ctx, width, height }
     }
-}
-
-async fn open(video: &HtmlVideoElement) -> Result<(), JsValue> {
-    let devices = web_sys::window().unwrap().navigator().media_devices()?;
-    let constraints = web_sys::MediaStreamConstraints::new();
-    let wanted = js_sys::Object::new();
-    js_sys::Reflect::set(&wanted, &"width".into(), &640.into())?;
-    js_sys::Reflect::set(&wanted, &"height".into(), &480.into())?;
-    js_sys::Reflect::set(&wanted, &"facingMode".into(), &"user".into())?;
-    constraints.set_video(&wanted);
-    let stream: MediaStream = wasm_bindgen_futures::JsFuture::from(
-        devices.get_user_media_with_constraints(&constraints)?,
-    )
-    .await?
-    .unchecked_into();
-    video.set_src_object(Some(&stream));
-    wasm_bindgen_futures::JsFuture::from(video.play()?).await?;
-    Ok(())
 }
 
 fn describe(e: &JsValue) -> String {

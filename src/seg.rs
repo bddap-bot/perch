@@ -4,6 +4,7 @@ const CHROMA_BIAS: f32 = 12.0;
 const CHROMA_FLOOR: f32 = 0.04;
 const CHROMA_SPREAD: f32 = 3.0;
 const LUMA_BIAS: f32 = 24.0;
+const CHANNEL_BIAS: f32 = LUMA_BIAS / 3.0;
 const SHADOW_FLOOR: f32 = 0.5;
 const HIGHLIGHT_CEIL: f32 = 1.45;
 const ADAPT_RATE: f32 = 0.03;
@@ -116,15 +117,12 @@ impl Segmenter {
         let gain = global_gain(rgba, background, &mut self.ratios);
         for (i, model) in background.iter_mut().enumerate() {
             let px = pixel(rgba, i);
-            let solid = differs(
-                px,
-                model.rgb.map(|c| (c * gain).min(255.0)),
-                model.chroma_tolerance,
-            );
+            let expected = std::array::from_fn(|c| (model.rgb[c] * gain[c]).min(255.0));
+            let solid = differs(px, expected, model.chroma_tolerance);
             self.raw[i] = solid as u8;
             if !solid {
-                for (bg, c) in model.rgb.iter_mut().zip(px) {
-                    *bg += ADAPT_RATE * (c / gain - *bg);
+                for c in 0..3 {
+                    model.rgb[c] += ADAPT_RATE * (px[c] / gain[c] - model.rgb[c]);
                 }
             }
         }
@@ -143,24 +141,22 @@ impl Segmenter {
     }
 }
 
-/// A lighting change scales every background pixel by roughly the same factor,
-/// so the median luma ratio over the frame recovers it while foreground stays
-/// a minority.
-fn global_gain(rgba: &[u8], background: &[Model], ratios: &mut Vec<f32>) -> f32 {
-    ratios.clear();
-    ratios.extend(
-        background
-            .iter()
-            .enumerate()
-            .step_by(7)
-            .map(|(i, model)| luma_ratio(pixel(rgba, i), model.rgb)),
-    );
-    if ratios.is_empty() {
-        return 1.0;
-    }
-    let mid = ratios.len() / 2;
-    let (_, median, _) = ratios.select_nth_unstable_by(mid, f32::total_cmp);
-    median.clamp(0.25, 4.0)
+/// Exposure and white-balance drift scale each channel of every background
+/// pixel by roughly the same factor, so the per-channel median ratio over the
+/// frame recovers it while foreground stays a minority.
+fn global_gain(rgba: &[u8], background: &[Model], ratios: &mut Vec<f32>) -> [f32; 3] {
+    std::array::from_fn(|c| {
+        ratios.clear();
+        ratios.extend(background.iter().enumerate().step_by(7).map(|(i, model)| {
+            (rgba[i * 4 + c] as f32 + CHANNEL_BIAS) / (model.rgb[c] + CHANNEL_BIAS)
+        }));
+        if ratios.is_empty() {
+            return 1.0;
+        }
+        let mid = ratios.len() / 2;
+        let (_, median, _) = ratios.select_nth_unstable_by(mid, f32::total_cmp);
+        median.clamp(0.25, 4.0)
+    })
 }
 
 /// Shadows and highlights move luma but keep chromaticity, so a pixel counts

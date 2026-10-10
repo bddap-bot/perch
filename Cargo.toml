@@ -15,10 +15,6 @@ web-sys = { version = "0.3", features = [
   "HtmlCanvasElement",
   "HtmlVideoElement",
   "ImageData",
-  "MediaDevices",
-  "MediaStream",
-  "MediaStreamConstraints",
-  "Navigator",
   "VideoPlaybackQuality",
   "Window",
 ] }

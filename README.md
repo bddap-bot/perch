@@ -16,7 +16,7 @@ Play: **https://bddap-bot.github.io/perch/**
 | Jump | Space (or ↑ W Z) | bottom face button |
 | Recapture the empty scene | B | right face button or Select |
 
-Anything highlighted counts as ground, and its top edges are drawn brighter. Keep the camera still: moving it makes the whole room look new, so recapture after bumping it. Soft shadows and whole-room brightness changes are ignored; a lamp switched on near one part of the scene needs a recapture.
+Anything highlighted counts as ground, and its top edges are drawn brighter. Keep the camera still: moving it makes the whole room look new, so recapture after bumping it. Soft shadows and whole-room brightness or colour changes are ignored; a lamp switched on near one part of the scene needs a recapture.
 
 ## Build
 
