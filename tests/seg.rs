@@ -1,0 +1,225 @@
+use perch::seg::{CAPTURE_FRAMES, Segmenter};
+
+const W: usize = 240;
+const H: usize = 180;
+
+type Rect = (usize, usize, usize, usize);
+
+struct Noise(u64);
+
+impl Noise {
+    fn next(&mut self) -> f32 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((self.0 >> 33) as f32 / (1u64 << 31) as f32) - 0.5
+    }
+}
+
+fn room(x: usize, y: usize) -> [f32; 3] {
+    let (fx, fy) = (x as f32, y as f32);
+    let mut c = [150.0 + fy * 0.3, 135.0 + fx * 0.1, 115.0];
+    if (x / 30 + y / 45).is_multiple_of(2) {
+        c = [c[0] * 0.8, c[1] * 0.9, c[2] * 1.2];
+    }
+    if (60..110).contains(&x) && (20..90).contains(&y) {
+        c = [60.0, 90.0, 140.0];
+    }
+    if (160..230).contains(&x) && (100..170).contains(&y) {
+        c = [120.0, 70.0, 45.0];
+    }
+    if x.is_multiple_of(17) {
+        c = c.map(|v| v * 0.85);
+    }
+    c
+}
+
+struct Scene {
+    noise: Noise,
+    gain: f32,
+    shadow: Option<Rect>,
+    objects: Vec<(Rect, [f32; 3])>,
+}
+
+impl Scene {
+    fn new() -> Self {
+        Self {
+            noise: Noise(7),
+            gain: 1.0,
+            shadow: None,
+            objects: Vec::new(),
+        }
+    }
+
+    fn frame(&mut self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(W * H * 4);
+        for y in 0..H {
+            for x in 0..W {
+                let inside = |r: Rect| (r.0..r.2).contains(&x) && (r.1..r.3).contains(&y);
+                let mut c = room(x, y);
+                for &(r, colour) in &self.objects {
+                    if inside(r) {
+                        c = colour.map(|v| v * if (x + y) % 9 == 0 { 0.9 } else { 1.0 });
+                    }
+                }
+                let shade = if self.shadow.is_some_and(inside) {
+                    0.6
+                } else {
+                    1.0
+                };
+                for v in c {
+                    let n = self.noise.next() * 10.0;
+                    out.push((v * self.gain * shade + n).clamp(0.0, 255.0) as u8);
+                }
+                out.push(255);
+            }
+        }
+        out
+    }
+}
+
+fn captured(scene: &mut Scene) -> Segmenter {
+    let mut seg = Segmenter::new(W, H);
+    seg.begin_capture();
+    for i in 0..CAPTURE_FRAMES {
+        let done = seg.add_capture_frame(&scene.frame());
+        assert_eq!(done, i + 1 == CAPTURE_FRAMES);
+    }
+    assert!(seg.has_background());
+    seg
+}
+
+fn coverage(seg: &Segmenter, r: Rect) -> f32 {
+    let mut hit = 0;
+    for y in r.1..r.3 {
+        for x in r.0..r.2 {
+            hit += seg.mask.cells[y * W + x] as usize;
+        }
+    }
+    hit as f32 / ((r.2 - r.0) * (r.3 - r.1)) as f32
+}
+
+fn outside(seg: &Segmenter, rects: &[Rect]) -> f32 {
+    let mut hit = 0;
+    let mut total = 0;
+    for y in 0..H {
+        for x in 0..W {
+            let near = rects
+                .iter()
+                .any(|r| x + 2 >= r.0 && x < r.2 + 2 && y + 2 >= r.1 && y < r.3 + 2);
+            if !near {
+                total += 1;
+                hit += seg.mask.cells[y * W + x] as usize;
+            }
+        }
+    }
+    hit as f32 / total as f32
+}
+
+#[test]
+fn nothing_is_solid_before_capture() {
+    let mut scene = Scene::new();
+    let mut seg = Segmenter::new(W, H);
+    scene.objects.push(((10, 10, 50, 50), [250.0, 20.0, 20.0]));
+    seg.segment(&scene.frame());
+    assert!(seg.mask.cells.iter().all(|&s| !s));
+}
+
+#[test]
+fn empty_busy_room_stays_empty() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    for _ in 0..10 {
+        seg.segment(&scene.frame());
+    }
+    assert!(outside(&seg, &[]) < 0.002, "{}", outside(&seg, &[]));
+}
+
+#[test]
+fn global_lighting_shift_stays_empty() {
+    for gain in [0.6, 0.8, 1.25, 1.4] {
+        let mut scene = Scene::new();
+        let mut seg = captured(&mut scene);
+        scene.gain = gain;
+        seg.segment(&scene.frame());
+        assert!(
+            outside(&seg, &[]) < 0.002,
+            "gain {gain}: {}",
+            outside(&seg, &[])
+        );
+    }
+}
+
+#[test]
+fn cast_shadow_is_not_solid() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    scene.shadow = Some((40, 60, 140, 150));
+    seg.segment(&scene.frame());
+    assert!(outside(&seg, &[]) < 0.002, "{}", outside(&seg, &[]));
+}
+
+#[test]
+fn placed_objects_become_solid() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let book = (20, 120, 90, 140);
+    let arm = (100, 40, 200, 60);
+    scene.objects.push((book, [200.0, 40.0, 40.0]));
+    scene.objects.push((arm, [210.0, 160.0, 130.0]));
+    seg.segment(&scene.frame());
+    assert!(coverage(&seg, book) > 0.95, "{}", coverage(&seg, book));
+    assert!(coverage(&seg, arm) > 0.9, "{}", coverage(&seg, arm));
+    assert!(outside(&seg, &[book, arm]) < 0.002);
+}
+
+#[test]
+fn dark_object_on_light_wall_is_solid_despite_matching_chroma() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let r = (120, 10, 150, 40);
+    let wall = room(130, 20);
+    scene.objects.push((r, wall.map(|v| v * 0.3)));
+    seg.segment(&scene.frame());
+    assert!(coverage(&seg, r) > 0.9, "{}", coverage(&seg, r));
+}
+
+#[test]
+fn a_still_object_is_not_absorbed_into_the_background() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let r = (30, 30, 70, 60);
+    scene.objects.push((r, [40.0, 180.0, 60.0]));
+    for _ in 0..600 {
+        seg.segment(&scene.frame());
+    }
+    assert!(coverage(&seg, r) > 0.95, "{}", coverage(&seg, r));
+}
+
+#[test]
+fn a_moving_object_leaves_no_trail() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let mut r = (0, 0, 0, 0);
+    for step in 0..40 {
+        r = (10 + step * 4, 80, 50 + step * 4, 110);
+        scene.objects = vec![(r, [30.0, 200.0, 220.0])];
+        seg.segment(&scene.frame());
+    }
+    assert!(coverage(&seg, r) > 0.95);
+    assert!(outside(&seg, &[r]) < 0.002, "{}", outside(&seg, &[r]));
+}
+
+#[test]
+fn recapture_absorbs_what_was_placed() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let r = (30, 30, 70, 60);
+    scene.objects.push((r, [40.0, 180.0, 60.0]));
+    seg.segment(&scene.frame());
+    assert!(coverage(&seg, r) > 0.95);
+    seg = captured(&mut scene);
+    seg.segment(&scene.frame());
+    assert!(coverage(&seg, r) < 0.01);
+}

@@ -1,0 +1,59 @@
+{
+  "about": "Touched-path to test-suite map, read by `botq test-map`. First matching rule wins. `tests: []` means consciously untested and carries its why. Commands run from the repo root.",
+  "rules": [
+    {
+      "paths": [
+        "**/*.md",
+        ".gitignore",
+        "LICENSE"
+      ],
+      "tests": [],
+      "why": "prose; nothing executes it"
+    },
+    {
+      "paths": [
+        ".github/workflows/**"
+      ],
+      "tests": [],
+      "why": "GitHub is the only runner; the push that lands a workflow is the run that checks it"
+    },
+    {
+      "paths": [
+        "shell.nix"
+      ],
+      "tests": [
+        "nix-instantiate --parse shell.nix",
+        "nix-shell --run './web/build.sh'"
+      ],
+      "why": "a parse catches syntax; the web build inside the shell catches a missing tool"
+    },
+    {
+      "paths": [
+        "web/**",
+        "src/game.rs",
+        "src/webcam.rs",
+        "src/main.rs"
+      ],
+      "tests": [
+        "nix-shell --run 'shellcheck web/build.sh'",
+        "nix-shell --run 'cargo clippy --release --target wasm32-unknown-unknown -- --deny warnings'",
+        "nix-shell --run './web/build.sh'"
+      ],
+      "why": "the browser front end compiles only for wasm32; the web build also checks the wasm-bindgen pin"
+    },
+    {
+      "paths": [
+        "**/*.rs",
+        "Cargo.toml",
+        "Cargo.lock"
+      ],
+      "tests": [
+        "nix-shell --run 'cargo fmt --check'",
+        "nix-shell --run 'cargo clippy --all-targets -- --deny warnings'",
+        "nix-shell --run 'cargo clippy --release --target wasm32-unknown-unknown -- --deny warnings'",
+        "nix-shell --run 'cargo test --release'"
+      ],
+      "why": "segmentation, collision and sprite logic are native tests; the wasm clippy covers the browser code"
+    }
+  ]
+}

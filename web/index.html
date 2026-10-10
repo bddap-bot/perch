@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <title>perch</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #141417; }
+      #perch { display: block; width: 100%; height: 100%; outline: none; }
+      #hint { position: fixed; left: 0; right: 0; bottom: 1.2rem; text-align: center; pointer-events: none;
+              color: #e8e8ec; font: 600 15px/1.4 system-ui, sans-serif; text-shadow: 0 1px 3px #000; }
+    </style>
+  </head>
+  <body>
+    <canvas id="perch" tabindex="0"></canvas>
+    <div id="hint"></div>
+    <script type="module">
+      import init from "./perch.js";
+      init().catch((e) => {
+        if (!String(e).includes("Using exceptions for control flow"))
+          document.getElementById("hint").textContent = String(e);
+      });
+    </script>
+  </body>
+</html>
