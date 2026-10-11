@@ -110,7 +110,7 @@ fn around(outer: Rect, inner: Rect) -> [Rect; 4] {
 
 fn settle(seg: &mut Segmenter, scene: &mut Scene) {
     for _ in 0..4 {
-        seg.segment(&scene.frame());
+        seg.segment(&scene.frame(), None);
     }
 }
 
@@ -155,7 +155,7 @@ fn empty_busy_room_stays_empty() {
     let mut scene = Scene::new();
     let mut seg = captured(&mut scene);
     for _ in 0..10 {
-        seg.segment(&scene.frame());
+        seg.segment(&scene.frame(), None);
     }
     assert!(outside(&seg, &[]) < 0.002, "{}", outside(&seg, &[]));
 }
@@ -182,7 +182,7 @@ fn exposure_and_white_balance_ramp_is_not_foreground() {
     for step in 1..=30 {
         let t = step as f32 / 30.0;
         scene.gain = [1.0 - 0.45 * t, 1.0 - 0.3 * t, 1.0 - 0.1 * t];
-        seg.segment(&scene.frame());
+        seg.segment(&scene.frame(), None);
         assert!(
             outside(&seg, &[]) < 0.002,
             "step {step}: {}",
@@ -199,7 +199,7 @@ fn a_large_object_survives_a_white_balance_shift() {
     scene.objects.push((body, [190.0, 50.0, 40.0]));
     scene.gain = [0.8, 0.9, 1.15];
     for _ in 0..30 {
-        seg.segment(&scene.frame());
+        seg.segment(&scene.frame(), None);
     }
     assert!(coverage(&seg, body) > 0.95, "{}", coverage(&seg, body));
     assert!(outside(&seg, &[body]) < 0.002, "{}", outside(&seg, &[body]));
@@ -265,7 +265,7 @@ fn a_still_object_is_not_absorbed_into_the_background() {
     scene.objects.push((r, [40.0, 180.0, 60.0]));
     scene.camouflage = Some(camouflaged);
     for _ in 0..600 {
-        seg.segment(&scene.frame());
+        seg.segment(&scene.frame(), None);
     }
     assert!(coverage(&seg, r) > 0.95, "{}", coverage(&seg, r));
     assert!(
@@ -283,7 +283,7 @@ fn a_moving_object_leaves_no_trail() {
     for step in 0..40 {
         r = (10 + step * 4, 80, 50 + step * 4, 110);
         scene.objects = vec![(r, [30.0, 200.0, 220.0])];
-        seg.segment(&scene.frame());
+        seg.segment(&scene.frame(), None);
     }
     settle(&mut seg, &mut scene);
     assert!(coverage(&seg, r) > 0.95);
@@ -310,11 +310,11 @@ fn a_one_frame_speck_is_never_a_platform() {
     let speck = (100, 100, 110, 110);
     settle(&mut seg, &mut scene);
     scene.objects.push((speck, [250.0, 250.0, 30.0]));
-    seg.segment(&scene.frame());
+    seg.segment(&scene.frame(), None);
     scene.objects.clear();
     for _ in 0..4 {
         assert!(coverage(&seg, speck) == 0.0, "{}", coverage(&seg, speck));
-        seg.segment(&scene.frame());
+        seg.segment(&scene.frame(), None);
     }
 }
 
@@ -324,16 +324,16 @@ fn solid_needs_two_frames_and_clearing_needs_three() {
     let mut seg = captured(&mut scene);
     let r = (100, 100, 130, 130);
     scene.objects.push((r, [250.0, 250.0, 30.0]));
-    seg.segment(&scene.frame());
+    seg.segment(&scene.frame(), None);
     assert!(coverage(&seg, r) == 0.0, "{}", coverage(&seg, r));
-    seg.segment(&scene.frame());
+    seg.segment(&scene.frame(), None);
     assert!(coverage(&seg, r) > 0.95, "{}", coverage(&seg, r));
     scene.objects.clear();
     for _ in 0..2 {
-        seg.segment(&scene.frame());
+        seg.segment(&scene.frame(), None);
         assert!(coverage(&seg, r) > 0.95, "{}", coverage(&seg, r));
     }
-    seg.segment(&scene.frame());
+    seg.segment(&scene.frame(), None);
     assert!(coverage(&seg, r) == 0.0, "{}", coverage(&seg, r));
 }
 
@@ -390,4 +390,41 @@ fn a_hairline_seam_between_hands_is_sealed() {
     scene.objects.push(((101, 0, 140, 120), [40.0, 50.0, 70.0]));
     settle(&mut seg, &mut scene);
     assert!(coverage(&seg, seam) > 0.95, "{}", coverage(&seg, seam));
+}
+
+#[test]
+fn a_person_the_model_sees_is_solid_even_where_they_match_the_room() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let body = (100, 60, 140, 180);
+    let mut person = vec![0u8; W * H];
+    for y in body.1..body.3 {
+        for x in body.0..body.2 {
+            person[y * W + x] = 1;
+        }
+    }
+    for _ in 0..4 {
+        seg.segment(&scene.frame(), Some(&person));
+    }
+    assert!(coverage(&seg, body) > 0.95, "{}", coverage(&seg, body));
+    assert!(outside(&seg, &[body]) < 0.002, "{}", outside(&seg, &[body]));
+    for _ in 0..4 {
+        seg.segment(&scene.frame(), None);
+    }
+    assert!(coverage(&seg, body) == 0.0, "{}", coverage(&seg, body));
+}
+
+#[test]
+fn a_person_filling_most_of_the_frame_does_not_skew_the_colour_balance() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let body = (0, 0, W, 110);
+    let mut person = vec![0u8; W * H];
+    person[..110 * W].fill(1);
+    scene.objects.push((body, [190.0, 50.0, 40.0]));
+    scene.gain = [0.8, 0.9, 1.15];
+    for _ in 0..4 {
+        seg.segment(&scene.frame(), Some(&person));
+    }
+    assert!(outside(&seg, &[body]) < 0.002, "{}", outside(&seg, &[body]));
 }

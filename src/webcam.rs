@@ -20,6 +20,11 @@ extern "C" {
     fn eyes(video: &HtmlVideoElement) -> Vec<f64>;
 }
 
+#[wasm_bindgen(module = "/web/person.js")]
+extern "C" {
+    fn person(canvas: &HtmlCanvasElement) -> Vec<u8>;
+}
+
 pub enum Status {
     Waiting,
     Live,
@@ -149,6 +154,10 @@ impl Surface {
             .unwrap()
             .unchecked_into();
         Self { ctx, width, height }
+    }
+
+    pub fn person(&self) -> Option<Vec<u8>> {
+        Some(person(&self.ctx.canvas().unwrap())).filter(|mask| !mask.is_empty())
     }
 }
 

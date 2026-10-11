@@ -231,7 +231,7 @@ fn feed(mut camera: NonSendMut<Camera>, mut game: ResMut<Game>, time: Res<Time>)
             }
         }
         Phase::Playing { round, .. } => {
-            seg.segment(&frame);
+            seg.segment(&frame, camera.surface.person().as_deref());
             round.observe(&seg.mask);
         }
     }

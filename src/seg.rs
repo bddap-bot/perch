@@ -147,13 +147,17 @@ impl Segmenter {
         true
     }
 
-    pub fn segment(&mut self, rgba: &[u8]) {
+    pub fn segment(&mut self, rgba: &[u8], person_mask: Option<&[u8]>) {
         let State::Ready(background) = &mut self.state else {
             self.mask.cells.fill(false);
             return;
         };
         let (w, h) = (self.width, self.height);
-        let gain = global_gain(rgba, background, &mut self.ratios);
+        if let Some(mask) = person_mask {
+            assert_eq!(mask.len(), w * h);
+        }
+        let person = |i: usize| person_mask.is_some_and(|m| m[i] != 0);
+        let gain = global_gain(rgba, background, person, &mut self.ratios);
         let mean_gain = (gain[0] + gain[1] + gain[2]) / 3.0;
         texture(
             rgba,
@@ -169,7 +173,7 @@ impl Segmenter {
             let expected = std::array::from_fn(|c| (model.rgb[c] * gain[c]).min(255.0));
             let coloured = differs(px, expected, model.chroma_tolerance);
             let textured = (self.texture[i] - model.texture).abs() > model.texture_tolerance;
-            self.raw[i] = coloured as u8;
+            self.raw[i] = (coloured || person(i)) as u8;
             self.textured[i] = textured as u8;
             if !coloured && !textured {
                 for c in 0..3 {
@@ -233,13 +237,23 @@ impl Segmenter {
 /// Exposure and white-balance drift scale each channel of every background
 /// pixel by roughly the same factor, so the per-channel median ratio over the
 /// frame recovers it while foreground stays a minority.
-fn global_gain(rgba: &[u8], background: &[Model], ratios: &mut Vec<f32>) -> [f32; 3] {
+fn global_gain(
+    rgba: &[u8],
+    background: &[Model],
+    person: impl Fn(usize) -> bool,
+    ratios: &mut Vec<f32>,
+) -> [f32; 3] {
     std::array::from_fn(|c| {
         ratios.clear();
         ratios.extend(
-            background.iter().enumerate().step_by(7).map(|(i, model)| {
-                (pixel(rgba, i)[c] + CHANNEL_BIAS) / (model.rgb[c] + CHANNEL_BIAS)
-            }),
+            background
+                .iter()
+                .enumerate()
+                .step_by(7)
+                .filter(|&(i, _)| !person(i))
+                .map(|(i, model)| {
+                    (pixel(rgba, i)[c] + CHANNEL_BIAS) / (model.rgb[c] + CHANNEL_BIAS)
+                }),
         );
         if ratios.is_empty() {
             return 1.0;

@@ -15,7 +15,7 @@ Play: **https://bddap-bot.github.io/perch/**
 - The bird is caught or runs out of air: the round ends, your time is shown, and a new round starts.
 - Click or tap to recapture the empty scene.
 
-Highlighted areas count as solid, and their top edges are drawn brighter. Keep the camera still: moving it makes the whole room look new, so recapture after bumping it. Soft shadows and whole-room brightness or colour changes are ignored; a lamp switched on near one part of the scene needs a recapture.
+Highlighted areas count as solid, and their top edges are drawn brighter. Keep the camera still: moving it makes the whole room look new, so recapture after bumping it. People count as solid even against a wall the colour of their clothes. Soft shadows and whole-room brightness or colour changes are ignored; a lamp switched on near one part of the scene needs a recapture.
 
 ## Build
 
