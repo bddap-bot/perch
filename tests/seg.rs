@@ -380,3 +380,14 @@ fn a_pocket_the_bird_fits_in_stays_open() {
     settle(&mut seg, &mut scene);
     assert!(coverage(&seg, pocket) == 0.0, "{}", coverage(&seg, pocket));
 }
+
+#[test]
+fn a_hairline_seam_between_hands_is_sealed() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let seam = (100, 0, 101, 120);
+    scene.objects.push(((60, 0, 100, 120), [40.0, 50.0, 70.0]));
+    scene.objects.push(((101, 0, 140, 120), [40.0, 50.0, 70.0]));
+    settle(&mut seg, &mut scene);
+    assert!(coverage(&seg, seam) > 0.95, "{}", coverage(&seg, seam));
+}

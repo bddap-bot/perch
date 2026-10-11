@@ -201,7 +201,7 @@ impl Segmenter {
             }
             self.raw[i] = self.held[i] as u8;
         }
-        for op in [Op::Erode, Op::Dilate] {
+        for op in [Op::Erode, Op::Dilate, Op::Dilate, Op::Erode] {
             morph(&mut self.raw, &mut self.scratch, w, h, op);
         }
         for (cell, &r) in self.mask.cells.iter_mut().zip(&self.raw) {
