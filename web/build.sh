@@ -16,8 +16,10 @@ fi
 cd "$root"
 cargo build --release --target wasm32-unknown-unknown
 rm -rf "$out"
+release=${CARGO_TARGET_DIR:-$root/target}/wasm32-unknown-unknown/release
 wasm-bindgen --target web --no-typescript --remove-name-section \
-  --out-dir "$out" --out-name perch \
-  "${CARGO_TARGET_DIR:-$root/target}/wasm32-unknown-unknown/release/perch.wasm"
+  --out-dir "$out" --out-name perch "$release/game.wasm"
+wasm-bindgen --target web --no-typescript --remove-name-section \
+  --out-dir "$out" --out-name segmenter "$release/perch.wasm"
 cp "$here/index.html" "$out/index.html"
 echo "web/dist: $(du -sh "$out" | cut -f1)"

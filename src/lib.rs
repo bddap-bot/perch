@@ -6,6 +6,8 @@ pub mod play;
 pub mod rng;
 pub mod seg;
 pub mod sprite;
+#[cfg(target_arch = "wasm32")]
+pub mod vision;
 
 pub fn dist(a: (f32, f32), b: (f32, f32)) -> f32 {
     (a.0 - b.0).hypot(a.1 - b.1)

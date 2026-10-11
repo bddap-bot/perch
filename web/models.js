@@ -9,6 +9,8 @@ const DEPTH_MODEL =
 const FACE_PERIOD_MS = 100;
 const FACE_STALE_MS = 300;
 const DEPTH_PERIOD_MS = 200;
+const DEPTH_BUDGET_MS = 1000;
+const DEPTH_TRIALS = 3;
 
 const DETECTOR = `
 const { FilesetResolver, FaceDetector } = await import("${VISION}/vision_bundle.mjs");
@@ -59,11 +61,18 @@ const ESTIMATOR = `
 const ort = await import("${ORT}/ort.webgpu.min.mjs");
 ort.env.wasm.wasmPaths = "${ORT}/";
 const session = await ort.InferenceSession.create("${DEPTH_MODEL}", { executionProviders: ["webgpu", "wasm"] });
-const [W, H] = [238, 182];
+const PATCH = 14;
+const PIXELS = 238 * 182;
 const MEAN = [0.485, 0.456, 0.406];
 const STD = [0.229, 0.224, 0.225];
-const scaled = new OffscreenCanvas(W, H).getContext("2d", { willReadFrequently: true });
+const scaled = new OffscreenCanvas(PATCH, PATCH).getContext("2d", { willReadFrequently: true });
 async function estimate(image) {
+  const { width, height } = image;
+  const side = (n) => Math.max(PATCH, Math.round(n / PATCH) * PATCH);
+  const W = side(Math.sqrt((PIXELS * width) / height));
+  const H = side((W * height) / width);
+  scaled.canvas.width = W;
+  scaled.canvas.height = H;
   const bitmap = await createImageBitmap(image);
   scaled.drawImage(bitmap, 0, 0, W, H);
   bitmap.close();
@@ -73,7 +82,6 @@ async function estimate(image) {
     for (let c = 0; c < 3; c++) input[c * W * H + i] = (px[i * 4 + c] / 255 - MEAN[c]) / STD[c];
   const result = await session.run({ pixel_values: new ort.Tensor("float32", input, [1, 3, H, W]) });
   const predicted = result.predicted_depth.data;
-  const { width, height } = image;
   const out = new Float32Array(width * height);
   for (let y = 0; y < height; y++)
     for (let x = 0; x < width; x++)
@@ -90,8 +98,9 @@ onmessage = async ({ data: { frame, empty, generation } }) => {
       measured = generation;
     }
     if (measured !== generation) return postMessage({ generation, missing: true });
+    const started = performance.now();
     const depth = await estimate(frame);
-    const reply = { generation, frame: depth, background: background.slice(), pixels: frame.data };
+    const reply = { generation, ms: performance.now() - started, frame: depth, background: background.slice(), pixels: frame.data };
     postMessage(reply, [reply.frame.buffer, reply.background.buffer, reply.pixels.buffer]);
   } catch {
     postMessage(null);
@@ -100,7 +109,7 @@ onmessage = async ({ data: { frame, empty, generation } }) => {
 postMessage(null);
 `;
 
-function spawn(source, label) {
+export function spawn(source, label) {
   const worker = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })), { type: "module" });
   const task = { worker, ready: false, busy: false, sent: -Infinity, arrived: -Infinity, result: null };
   worker.onmessage = ({ data }) => {
@@ -117,7 +126,7 @@ function spawn(source, label) {
   return task;
 }
 
-function due(task, period = 0) {
+export function due(task, period = 0) {
   return task.ready && !task.busy && performance.now() - task.sent >= period;
 }
 
@@ -127,12 +136,12 @@ function post(task, message, transfer) {
   task.worker.postMessage(message, transfer);
 }
 
-function postBitmap(task, source) {
+export function postBitmap(task, source, extra = {}) {
   task.busy = true;
   task.sent = performance.now();
   const at = task.sent;
   createImageBitmap(source)
-    .then((frame) => task.worker.postMessage({ frame, at }, [frame]))
+    .then((frame) => task.worker.postMessage({ ...extra, frame, at }, [frame]))
     .catch(() => (task.busy = false));
 }
 
@@ -144,9 +153,10 @@ export function eyes(video) {
   return (performance.now() - face.arrived < FACE_STALE_MS && face.result) || [];
 }
 
-const person = spawn(SEGMENTER, "person segmenter");
+let person = null;
 
 export function personMask(canvas) {
+  person ??= spawn(SEGMENTER, "person segmenter");
   if (due(person)) postBitmap(person, canvas);
   return person.result ?? new Uint8Array();
 }
@@ -155,8 +165,10 @@ let depth = null;
 let generation = 0;
 let scene = null;
 let resend = false;
+const timings = [];
 
 export function depthEstimate(frame, width, height, empty) {
+  if (depth === false) return null;
   depth ??= spawn(ESTIMATOR, "depth estimator");
   if (empty.length) {
     generation++;
@@ -167,6 +179,15 @@ export function depthEstimate(frame, width, height, empty) {
   const reply = depth.result?.generation === generation ? depth.result : null;
   depth.result = null;
   if (reply?.missing) resend = true;
+  if (reply?.ms && timings.push(reply.ms) === DEPTH_TRIALS) {
+    const fastest = Math.min(...timings);
+    if (fastest > DEPTH_BUDGET_MS) {
+      console.info(`depth off: ${Math.round(fastest)} ms per estimate`);
+      depth.worker.terminate();
+      depth = false;
+      return null;
+    }
+  }
   if (due(depth, resend ? 0 : DEPTH_PERIOD_MS)) {
     const image = new ImageData(new Uint8ClampedArray(frame), width, height);
     post(depth, { frame: image, empty: resend ? scene : null, generation }, [image.data.buffer]);

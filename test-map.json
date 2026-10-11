@@ -30,6 +30,7 @@
     {
       "paths": [
         "web/**",
+        "src/vision.rs",
         "src/game.rs",
         "src/webcam.rs",
         "src/main.rs"
@@ -39,7 +40,7 @@
         "nix-shell --run 'cargo clippy --release --target wasm32-unknown-unknown -- --deny warnings'",
         "nix-shell --run './web/build.sh'"
       ],
-      "why": "the browser front end compiles only for wasm32; the web build also checks the wasm-bindgen pin"
+      "why": "the browser front end and the vision worker compile only for wasm32; the web build also checks the wasm-bindgen pin"
     },
     {
       "paths": [

@@ -8,12 +8,14 @@ use bevy::sprite::Anchor;
 use perch::bird::LOW_AIR;
 use perch::body::{HEIGHT, MAX_STEP};
 use perch::play::{Loss, MAX_BADDIES, MAX_POOFS, POOF_SECONDS, Round};
-use perch::seg::{Mask, Segmenter};
+use perch::seg::Mask;
 use perch::sprite::{self, Frame};
+use wasm_bindgen::{JsCast, JsValue};
 
-use crate::webcam::{Surface, Webcam};
+use crate::webcam::{Vision, Webcam};
 
-const MASK: (u32, u32) = (240, 180);
+const LANDSCAPE: (u32, u32) = (240, 180);
+const CELLS: f32 = (LANDSCAPE.0 * LANDSCAPE.1) as f32;
 const COUNTDOWN: f32 = 3.0;
 const STALL: f32 = 3.0;
 const RESTART: f32 = 3.0;
@@ -43,22 +45,22 @@ pub fn run() {
         .insert_resource(ClearColor(Color::NONE))
         .insert_non_send(Camera {
             webcam: Webcam::start(),
-            surface: Surface::new(MASK.0, MASK.1),
+            vision: Vision::new(LANDSCAPE.0, LANDSCAPE.1),
             last_frame: 0.0,
         })
         .insert_resource(Game {
-            seg: Segmenter::new(MASK.0 as usize, MASK.1 as usize),
+            mask: Mask::empty(LANDSCAPE.0 as usize, LANDSCAPE.1 as usize),
             phase: Phase::WaitingCamera,
             mask_dirty: false,
         })
         .add_systems(Startup, setup)
-        .add_systems(Update, (feed, recapture, play, draw, hint).chain())
+        .add_systems(Update, (fit, feed, recapture, play, draw, hint).chain())
         .run();
 }
 
 struct Camera {
     webcam: Webcam,
-    surface: Surface,
+    vision: Vision,
     last_frame: f32,
 }
 
@@ -71,7 +73,7 @@ enum Phase {
 
 #[derive(Resource)]
 struct Game {
-    seg: Segmenter,
+    mask: Mask,
     phase: Phase,
     mask_dirty: bool,
 }
@@ -82,6 +84,9 @@ struct Art {
     bird: Vec<Handle<Image>>,
     baddie: [Handle<Image>; 2],
 }
+
+#[derive(Component)]
+struct Backdrop;
 
 #[derive(Component, Clone, Copy)]
 enum Role {
@@ -113,37 +118,38 @@ fn seed() -> u32 {
     (js_sys::Math::random() * u32::MAX as f64) as u32
 }
 
-fn world(x: f32, y: f32) -> Vec2 {
-    Vec2::new(x - MASK.0 as f32 / 2.0, MASK.1 as f32 / 2.0 - y)
+fn mask_size(aspect: f32) -> (u32, u32) {
+    let width = (CELLS * aspect).sqrt().round();
+    (width as u32, (width / aspect).round() as u32)
+}
+
+fn world(mask: &Mask, x: f32, y: f32) -> Vec2 {
+    Vec2::new(x - mask.width as f32 / 2.0, mask.height as f32 / 2.0 - y)
 }
 
 fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     commands.spawn((
         Camera2d,
         Projection::Orthographic(OrthographicProjection {
-            scaling_mode: ScalingMode::AutoMin {
-                min_width: MASK.0 as f32,
-                min_height: MASK.1 as f32,
-            },
+            scaling_mode: contain(LANDSCAPE),
             ..OrthographicProjection::default_2d()
         }),
     ));
-    let mask = images.add(image(
-        MASK.0,
-        MASK.1,
-        vec![0; (MASK.0 * MASK.1 * 4) as usize],
-    ));
+    let mask = images.add(blank(LANDSCAPE));
     let bird: Vec<_> = Frame::all()
         .map(|f| sized(&mut images, sprite::BIRD, sprite::bird(f)))
         .collect();
     let baddie = [0, 1].map(|s| sized(&mut images, sprite::BADDIE, sprite::baddie(s)));
     let puff = sized(&mut images, sprite::PUFF, sprite::puff());
     let bubble = sized(&mut images, sprite::BUBBLE, sprite::bubble());
-    commands.spawn(Sprite {
-        image: mask.clone(),
-        custom_size: Some(Vec2::new(MASK.0 as f32, MASK.1 as f32)),
-        ..default()
-    });
+    commands.spawn((
+        Backdrop,
+        Sprite {
+            image: mask.clone(),
+            custom_size: Some(extent(LANDSCAPE)),
+            ..default()
+        },
+    ));
     let mut slot = |role: Role, image: &Handle<Image>, size: Vec2, z: f32, anchor: Anchor| {
         commands.spawn((
             role,
@@ -195,27 +201,80 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     commands.insert_resource(Art { mask, bird, baddie });
 }
 
-fn feed(mut camera: NonSendMut<Camera>, mut game: ResMut<Game>, time: Res<Time>) {
-    let now = time.elapsed_secs();
-    if !camera.webcam.new_frame() {
+fn blank((w, h): (u32, u32)) -> Image {
+    image(w, h, vec![0; (w * h * 4) as usize])
+}
+
+fn extent((w, h): (u32, u32)) -> Vec2 {
+    Vec2::new(w as f32, h as f32)
+}
+
+fn contain((w, h): (u32, u32)) -> ScalingMode {
+    ScalingMode::AutoMin {
+        min_width: w as f32,
+        min_height: h as f32,
+    }
+}
+
+/// The mask takes the screen's aspect when play starts and when a phone turns,
+/// which moves the camera and voids the empty scene anyway. Other resizes keep
+/// it, letterboxed, rather than recapture.
+#[allow(clippy::too_many_arguments)]
+fn fit(
+    mut camera: NonSendMut<Camera>,
+    mut game: ResMut<Game>,
+    art: Res<Art>,
+    mut images: ResMut<Assets<Image>>,
+    mut projection: Single<&mut Projection>,
+    mut backdrop: Single<&mut Sprite, With<Backdrop>>,
+    time: Res<Time>,
+    mut portrait: Local<Option<bool>>,
+) {
+    let page = web_sys::window().unwrap();
+    let size = |v: Result<JsValue, JsValue>| v.ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+    let (vw, vh) = (size(page.inner_width()), size(page.inner_height()));
+    if vw < 1.0 || vh < 1.0 {
         return;
     }
-    camera.last_frame = now;
-    let frame = camera.webcam.read(&camera.surface);
+    if *portrait != Some(vh > vw) {
+        *portrait = Some(vh > vw);
+        let size = mask_size(vw / vh);
+        camera.vision = Vision::new(size.0, size.1);
+        game.mask = Mask::empty(size.0 as usize, size.1 as usize);
+        game.mask_dirty = true;
+        if !matches!(game.phase, Phase::WaitingCamera) {
+            camera.webcam.release();
+            game.phase = Phase::Countdown {
+                until: time.elapsed_secs() + COUNTDOWN,
+            };
+        }
+        images.insert(&art.mask, blank(size)).unwrap();
+        backdrop.custom_size = Some(extent(size));
+        if let Projection::Orthographic(o) = &mut **projection {
+            o.scaling_mode = contain(size);
+        }
+        if let Some(stage) = page.document().and_then(|d| d.get_element_by_id("stage")) {
+            let aspect = (size.0 as f32 / size.1 as f32).to_string();
+            let style = stage.unchecked_into::<web_sys::HtmlElement>().style();
+            style.set_property("--aspect", &aspect).unwrap();
+        }
+    }
+}
 
+fn feed(mut camera: NonSendMut<Camera>, mut game: ResMut<Game>, time: Res<Time>) {
+    let now = time.elapsed_secs();
+    camera.webcam.feed(&camera.vision);
+    let Some(seen) = camera.vision.seen() else {
+        return;
+    };
+    camera.last_frame = now;
     let Game {
-        seg,
+        mask,
         phase,
         mask_dirty,
     } = &mut *game;
+    *mask = seen.mask;
     *mask_dirty = true;
-    let person = camera.surface.person();
-    if seg.has_background() {
-        let empty = seg.depth_background();
-        if let Some(estimate) = camera.surface.depth(&frame, empty.as_deref()) {
-            seg.observe_depth(estimate);
-        }
-    }
     match phase {
         Phase::WaitingCamera => {
             *phase = Phase::Countdown {
@@ -224,23 +283,19 @@ fn feed(mut camera: NonSendMut<Camera>, mut game: ResMut<Game>, time: Res<Time>)
         }
         Phase::Countdown { until } if now >= *until => {
             camera.webcam.lock();
-            seg.begin_capture();
-            seg.add_capture_frame(&frame);
+            camera.vision.capture();
             *phase = Phase::Capturing;
         }
         Phase::Countdown { .. } => {}
         Phase::Capturing => {
-            if seg.add_capture_frame(&frame) {
+            if seen.captured {
                 *phase = Phase::Playing {
-                    round: Box::new(Round::new(&seg.mask, seed())),
+                    round: Box::new(Round::new(mask, seed())),
                     lost_at: 0.0,
                 };
             }
         }
-        Phase::Playing { round, .. } => {
-            seg.segment(&frame, person.as_deref());
-            round.observe(&seg.mask);
-        }
+        Phase::Playing { round, .. } => round.observe(mask),
     }
 }
 
@@ -254,9 +309,15 @@ fn recapture(
     if !(mouse.just_pressed(MouseButton::Left) || touches.any_just_pressed()) {
         return;
     }
-    let Game { seg, phase, .. } = &mut *game;
+    let Game {
+        mask,
+        phase,
+        mask_dirty,
+    } = &mut *game;
     if matches!(phase, Phase::Playing { .. } | Phase::Capturing) {
-        seg.begin_capture();
+        camera.vision.reset();
+        mask.cells.fill(false);
+        *mask_dirty = true;
         camera.webcam.release();
         *phase = Phase::Countdown {
             until: time.elapsed_secs() + COUNTDOWN,
@@ -277,7 +338,7 @@ fn play(
     mut eyes: Local<EyeTrack>,
 ) {
     let now = time.elapsed_secs();
-    match (camera.webcam.eyes(&camera.surface), eyes.at) {
+    match (camera.webcam.eyes(&camera.vision), eyes.at) {
         (Some(raw), Some(at)) => {
             let k = 1.0 - (-time.delta_secs() * EYE_FOLLOW).exp();
             eyes.at = Some((at.0 + (raw.0 - at.0) * k, at.1 + (raw.1 - at.1) * k));
@@ -290,7 +351,7 @@ fn play(
         (None, _) if now - eyes.seen > EYES_LOST => eyes.at = None,
         (None, _) => {}
     }
-    let Game { seg, phase, .. } = &mut *game;
+    let Game { mask, phase, .. } = &mut *game;
     let Phase::Playing { round, lost_at } = phase else {
         return;
     };
@@ -298,12 +359,12 @@ fn play(
     let mut left = time.delta_secs().min(0.25);
     while left > 0.0 {
         let dt = left.min(MAX_STEP);
-        round.step(&seg.mask, eyes.at, dt);
+        round.step(mask, eyes.at, dt);
         left -= dt;
     }
     match (was_lost, round.lost.is_some()) {
         (false, true) => *lost_at = now,
-        (true, _) if now - *lost_at > RESTART => **round = Round::new(&seg.mask, seed()),
+        (true, _) if now - *lost_at > RESTART => **round = Round::new(mask, seed()),
         _ => {}
     }
 }
@@ -338,7 +399,7 @@ fn draw(
 ) {
     let t = time.elapsed_secs();
     let Game {
-        seg,
+        mask,
         phase,
         mask_dirty,
     } = &mut *game;
@@ -351,7 +412,7 @@ fn draw(
         && let Some(mut img) = images.get_mut(&art.mask)
         && let Some(data) = img.data.as_mut()
     {
-        paint(data, &seg.mask, round);
+        paint(data, mask, round);
         *mask_dirty = false;
         *tinted = sealed;
     }
@@ -366,7 +427,7 @@ fn draw(
                 let look = round.look;
                 let puffed = if look.frame.puffed { 1.1 } else { 1.0 };
                 let shake = Vec2::new((t * 53.0).sin(), (t * 47.0).cos() * 0.5) * look.shake;
-                let feet = world(round.body.centre().0, round.body.y + HEIGHT as f32);
+                let feet = world(mask, round.body.centre().0, round.body.y + HEIGHT as f32);
                 sprite.image = art.bird[look.frame.index()].clone();
                 sprite.flip_x = look.face_left;
                 transform.translation = (feet.round() + shake).extend(transform.translation.z);
@@ -389,7 +450,7 @@ fn draw(
                 let bob = (t * 9.0 + i as f32).sin() * 0.6;
                 sprite.image = art.baddie[step].clone();
                 sprite.flip_x = b.facing_left;
-                transform.translation = world(b.x, b.y + bob).extend(transform.translation.z);
+                transform.translation = world(mask, b.x, b.y + bob).extend(transform.translation.z);
             }
             Role::Poof(i) => {
                 let Some(p) = round.poofs.get(i) else {
@@ -397,7 +458,8 @@ fn draw(
                 };
                 let k = p.age / POOF_SECONDS;
                 sprite.color = Color::srgba(1.0, 1.0, 1.0, 1.0 - k);
-                transform.translation = world(p.x, p.y - k * 4.0).extend(transform.translation.z);
+                transform.translation =
+                    world(mask, p.x, p.y - k * 4.0).extend(transform.translation.z);
                 transform.scale = Vec3::splat(1.0 + k * 1.5);
             }
             Role::Bubble(i) => {
@@ -411,7 +473,7 @@ fn draw(
                 let x = round.body.centre().0 + (i as f32 - (BUBBLES - 1) as f32 / 2.0) * 2.5;
                 let wobble = (t * 6.0 + i as f32 * 1.3).sin() * 0.4;
                 transform.translation =
-                    world(x, round.body.y - 3.0 + wobble).extend(transform.translation.z);
+                    world(mask, x, round.body.y - 3.0 + wobble).extend(transform.translation.z);
                 sprite.color = if round.breath < LOW_AIR {
                     Color::srgb(1.0, 0.55, 0.5)
                 } else {

@@ -151,6 +151,22 @@ fn nothing_is_solid_before_capture() {
 }
 
 #[test]
+fn a_forgotten_scene_takes_no_frames_until_the_next_capture() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    scene.objects.push(((10, 10, 50, 50), [250.0, 20.0, 20.0]));
+    settle(&mut seg, &mut scene);
+    assert!(seg.mask.cells.iter().any(|&s| s));
+    seg.forget();
+    assert!(!seg.has_background());
+    assert!(seg.mask.cells.iter().all(|&s| !s));
+    for _ in 0..CAPTURE_FRAMES {
+        assert!(!seg.add_capture_frame(&scene.frame()));
+    }
+    assert!(!seg.has_background());
+}
+
+#[test]
 fn empty_busy_room_stays_empty() {
     let mut scene = Scene::new();
     let mut seg = captured(&mut scene);

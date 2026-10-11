@@ -116,7 +116,13 @@ impl Segmenter {
     }
 
     pub fn begin_capture(&mut self) {
+        self.forget();
         self.state = State::Capturing(Vec::with_capacity(CAPTURE_FRAMES));
+    }
+
+    /// Takes no frames until `begin_capture`, so the player can step out of view.
+    pub fn forget(&mut self) {
+        self.state = State::Empty;
         self.mask.cells.fill(false);
         self.held.fill(false);
         self.run.fill(0);

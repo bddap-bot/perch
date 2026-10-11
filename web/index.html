@@ -2,15 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
     <title>perch</title>
     <style>
-      html, body { margin: 0; height: 100%; overflow: hidden; background: #141417; }
-      #stage { position: fixed; left: 50%; top: 50%; width: min(100vw, 133.334dvh); aspect-ratio: 4 / 3;
-               transform: translate(-50%, -50%); overflow: hidden; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #141417; touch-action: none;
+                   -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+      #stage { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); overflow: hidden; --aspect: 4 / 3;
+               width: min(100vw, 100dvh * var(--aspect)); aspect-ratio: var(--aspect); }
       #camera { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
       #perch { position: fixed; inset: 0; display: block; width: 100%; height: 100%; outline: none; }
-      #hint { position: fixed; left: 0; right: 0; bottom: 1.2rem; text-align: center; pointer-events: none;
+      #hint { position: fixed; left: 0; right: 0; bottom: calc(1.2rem + env(safe-area-inset-bottom)); text-align: center; pointer-events: none;
               color: #e8e8ec; font: 600 15px/1.4 system-ui, sans-serif; text-shadow: 0 1px 3px #000; }
     </style>
   </head>

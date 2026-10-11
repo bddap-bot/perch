@@ -14,6 +14,7 @@ Play: **https://bddap-bot.github.io/perch/**
 - Wall the bird in and the monsters cannot reach it, but it needs air: when no open path leads from the bird to the edge of the screen, its air pocket turns red and its bubbles run out. Open a gap before they do.
 - The bird is caught or runs out of air: the round ends, your time is shown, and a new round starts.
 - Click or tap to recapture the empty scene.
+- On a phone, prop it up facing you; it plays in portrait or landscape, and turning it starts a new capture.
 
 Highlighted areas count as solid, and their top edges are drawn brighter. Keep the camera still: moving it makes the whole room look new, so recapture after bumping it. People count as solid even against a wall the colour of their clothes. Soft shadows and whole-room brightness or colour changes are ignored; a lamp switched on near one part of the scene needs a recapture.
 
