@@ -6,7 +6,7 @@
 - Changes land directly on `main`.
 - `test-map.json` maps every touched path to the commands that must be green before landing.
 - Sprites are drawn in code (`src/sprite.rs`). Any added asset is self-made or CC0 with its attribution recorded here, and stored lossless.
-- `web/face.js` loads MediaPipe Tasks Vision (`@mediapipe/tasks-vision`, Apache-2.0) and its BlazeFace short-range face detector model (Apache-2.0) from their CDNs at runtime; the version is pinned there, and any other MediaPipe task should load through the same pin. `web/person.js` loads the selfie segmenter model (Apache-2.0, about 250 KB) through the same pin, so the runtime download is shared.
+- `web/models.js` loads its models from their CDNs at runtime, each pinned there: MediaPipe Tasks Vision (`@mediapipe/tasks-vision`, Apache-2.0) with its BlazeFace short-range face detector and selfie segmenter models (Apache-2.0); ONNX Runtime Web (`onnxruntime-web`, MIT) with Depth Anything V2 Small (`onnx-community/depth-anything-v2-small`, int8, Apache-2.0, pinned to a Hugging Face revision). The person segmenter adds about 250 KB to the shared MediaPipe runtime; depth adds about 33 MB, fetched once the first empty scene is captured.
 
 ## Layout
 
@@ -17,11 +17,13 @@
 - `src/baddie.rs`: a monster walks the distance field downhill to the bird, or straight at it when sealed out, never entering solid.
 - `src/play.rs`: one round: air meter, monster waves, swats (solid that appeared within a quarter second next to a monster), loss.
 - `src/sprite.rs`: pixel-art images.
-- `web/person.js`: person segmentation in a module worker on a bitmap of the mask canvas, as often as the worker keeps up, so the frame never waits for it. Its latest mask, held until the next arrives, joins the colour and texture cues in `src/seg.rs`: a person is solid against any background, and the cells it covers are left out of the global gain estimate.
-- `web/face.js`: face detection in a module worker, about ten times a second, on a bitmap copied from the video, so the frame never waits for it. It returns the midpoint of the eyes; `src/webcam.rs` maps it through the same mirror and crop as the mask, and the bird treats it as a place it likes to be.
+- `web/models.js`: three models, each in its own module worker so the frame never waits for one; each worker takes a new frame only once it has answered the last.
+  - Face detection, about ten times a second, on a bitmap copied from the video. It returns the midpoint of the eyes; `src/webcam.rs` maps it through the same mirror and crop as the mask, and the bird treats it as a place it likes to be.
+  - Person segmentation on a bitmap of the mask canvas. Its latest mask, held until the next arrives, joins the colour and texture cues in `src/seg.rs`: a person is solid against any background, and the cells it covers are left out of the global gain estimate.
+  - Monocular depth, at most five times a second, WebGPU where available and WebAssembly otherwise. Its output shifts with exposure, so `src/seg.rs` has the empty scene measured again, rendered from the background model under the current gain, after each capture and whenever the gain moves. It fits scale and shift between the frame's depth and the empty scene's on cells the other cues call background, and marks cells clearly nearer than the empty scene solid, but only where the picture has not changed since the depth was measured, so a slow estimate leaves no ghost of something that moved.
 - `src/game.rs`, `src/webcam.rs`, `web/camera.js`: the wasm32-only Bevy front end. `getUserMedia` feeds the page's `<video>`, which CSS shows mirrored behind a transparent Bevy canvas; the game draws only the mask tint, the air pocket, the bird and the monsters. An offscreen 2D canvas reads the video mirrored and centre-cropped to 4:3 at mask resolution (240x180), and segmentation runs only when the video has a new frame. When the countdown ends, `web/camera.js` locks exposure, white balance and focus at their current values wherever the browser exposes them as manual modes, before the empty scene is captured; recapture hands them back to the camera. The `#stage` box in `web/index.html` and the camera's `ScalingMode::AutoMin` must frame the same 4:3 rectangle.
 
-Native `cargo test` covers segmentation (busy background, exposure and white-balance drift, hard and soft cast shadows, a textured object the colour of the wall, moving and still objects, one-frame and tiny specks, holes, a person seen by the model), collision, air, monster pathing, rounds and sprites. Bevy is a wasm32-only dependency, so native builds stay small.
+Native `cargo test` covers segmentation (busy background, exposure and white-balance drift, hard and soft cast shadows, a textured object the colour of the wall, moving and still objects, one-frame and tiny specks, holes, a person seen by the model, depth that differs only by scale and shift, something nearer by depth alone, stale depth), collision, air, monster pathing, rounds and sprites. Bevy is a wasm32-only dependency, so native builds stay small.
 
 ## Landing contract
 

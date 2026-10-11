@@ -10,6 +10,11 @@ const HIGHLIGHT_CEIL: f32 = 1.45;
 const TEXTURE_FLOOR: f32 = 0.05;
 const TEXTURE_SPREAD: f32 = 3.0;
 const ADAPT_RATE: f32 = 0.03;
+/// As a fraction of the empty scene's 5th-to-95th percentile depth range.
+const NEAR_MARGIN: f32 = 0.3;
+/// Summed RGB difference beyond which a cell has changed since its depth was measured.
+const MOVED: f32 = 36.0;
+const DEPTH_GAIN_STEP: f32 = 0.05;
 const RISE: u8 = 2;
 const FALL: u8 = 3;
 const MIN_SOLID: usize = 30;
@@ -44,6 +49,14 @@ enum State {
     Ready(Vec<Model>),
 }
 
+/// Relative inverse depth, larger nearer, of a camera frame and of the empty
+/// scene rendered under that frame's exposure, with the frame's pixels.
+pub struct DepthEstimate {
+    pub frame: Vec<f32>,
+    pub background: Vec<f32>,
+    pub pixels: Vec<u8>,
+}
+
 struct Model {
     rgb: [f32; 3],
     chroma_tolerance: f32,
@@ -65,6 +78,11 @@ pub struct Segmenter {
     held: Vec<bool>,
     run: Vec<u8>,
     region: Vec<usize>,
+    pairs: Vec<(f32, f32)>,
+    gain: [f32; 3],
+    depth_gain: Option<[f32; 3]>,
+    depth: Option<DepthEstimate>,
+    quantiles: Vec<f32>,
     pub mask: Mask,
 }
 
@@ -84,6 +102,11 @@ impl Segmenter {
             held: vec![false; width * height],
             run: vec![0; width * height],
             region: Vec::new(),
+            pairs: Vec::new(),
+            gain: [1.0; 3],
+            depth_gain: None,
+            depth: None,
+            quantiles: Vec::new(),
             mask: Mask::empty(width, height),
         }
     }
@@ -97,6 +120,47 @@ impl Segmenter {
         self.mask.cells.fill(false);
         self.held.fill(false);
         self.run.fill(0);
+        self.gain = [1.0; 3];
+        self.depth_gain = None;
+        self.depth = None;
+    }
+
+    /// Monocular depth shifts with exposure, so the empty scene's depth is
+    /// measured again, from the background model under the current gain,
+    /// after each capture and whenever the gain has moved since.
+    pub fn depth_background(&mut self) -> Option<Vec<u8>> {
+        let State::Ready(background) = &self.state else {
+            return None;
+        };
+        let gain = self.gain;
+        if self
+            .depth_gain
+            .is_some_and(|then| (0..3).all(|c| (gain[c] / then[c] - 1.0).abs() < DEPTH_GAIN_STEP))
+        {
+            return None;
+        }
+        self.depth_gain = Some(gain);
+        Some(
+            background
+                .iter()
+                .flat_map(|model| {
+                    let [r, g, b] = std::array::from_fn(|c| (model.rgb[c] * gain[c]).min(255.0));
+                    [r as u8, g as u8, b as u8, 255]
+                })
+                .collect(),
+        )
+    }
+
+    pub fn observe_depth(&mut self, estimate: DepthEstimate) {
+        let n = self.width * self.height;
+        let sizes = (
+            estimate.frame.len(),
+            estimate.background.len(),
+            estimate.pixels.len(),
+        );
+        if self.has_background() && sizes == (n, n, 4 * n) {
+            self.depth = Some(estimate);
+        }
     }
 
     pub fn add_capture_frame(&mut self, rgba: &[u8]) -> bool {
@@ -158,6 +222,7 @@ impl Segmenter {
         }
         let person = |i: usize| person_mask.is_some_and(|m| m[i] != 0);
         let gain = global_gain(rgba, background, person, &mut self.ratios);
+        self.gain = gain;
         let mean_gain = (gain[0] + gain[1] + gain[2]) / 3.0;
         texture(
             rgba,
@@ -178,6 +243,31 @@ impl Segmenter {
             if !coloured && !textured {
                 for c in 0..3 {
                     model.rgb[c] += ADAPT_RATE * (px[c] / gain[c] - model.rgb[c]);
+                }
+            }
+        }
+        if let Some(depth) = &self.depth {
+            self.quantiles.clear();
+            self.quantiles.extend(depth.background.iter().step_by(7));
+            self.quantiles.sort_unstable_by(f32::total_cmp);
+            let at = |q: f32| self.quantiles[((self.quantiles.len() - 1) as f32 * q) as usize];
+            let range = at(0.95) - at(0.05);
+            self.pairs.clear();
+            self.pairs.extend(
+                (0..w * h)
+                    .step_by(3)
+                    .filter(|&i| self.raw[i] == 0 && self.textured[i] == 0)
+                    .map(|i| (depth.background[i], depth.frame[i])),
+            );
+            if let Some((scale, shift)) = fit(&mut self.pairs, range) {
+                let margin = NEAR_MARGIN * range * scale;
+                for (i, raw) in self.raw.iter_mut().enumerate() {
+                    let [a, b] = [pixel(rgba, i), pixel(&depth.pixels, i)];
+                    let still = (0..3).map(|c| (a[c] - b[c]).abs()).sum::<f32>() < MOVED;
+                    let expected = scale * depth.background[i] + shift;
+                    if still && depth.frame[i] - expected > margin {
+                        *raw = 1;
+                    }
                 }
             }
         }
@@ -232,6 +322,23 @@ impl Segmenter {
             }
         }
     }
+}
+
+/// Least-squares scale and shift taking the empty scene's depth to the frame's,
+/// refit without the samples the first fit leaves more than half the near
+/// margin off, which are mostly things that came nearer.
+fn fit(pairs: &mut Vec<(f32, f32)>, range: f32) -> Option<(f32, f32)> {
+    let solve = |pairs: &[(f32, f32)]| {
+        let n = pairs.len() as f32;
+        let (sx, sy, sxx, sxy) = pairs.iter().fold((0.0, 0.0, 0.0, 0.0), |a, &(x, y)| {
+            (a.0 + x, a.1 + y, a.2 + x * x, a.3 + x * y)
+        });
+        let scale = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+        (pairs.len() >= 100 && scale > 0.0).then(|| (scale, (sy - scale * sx) / n))
+    };
+    let (scale, shift) = solve(pairs)?;
+    pairs.retain(|&(x, y)| (y - scale * x - shift).abs() < 0.5 * NEAR_MARGIN * range * scale);
+    solve(pairs)
 }
 
 /// Exposure and white-balance drift scale each channel of every background

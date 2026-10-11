@@ -209,6 +209,13 @@ fn feed(mut camera: NonSendMut<Camera>, mut game: ResMut<Game>, time: Res<Time>)
         mask_dirty,
     } = &mut *game;
     *mask_dirty = true;
+    let person = camera.surface.person();
+    if seg.has_background() {
+        let empty = seg.depth_background();
+        if let Some(estimate) = camera.surface.depth(&frame, empty.as_deref()) {
+            seg.observe_depth(estimate);
+        }
+    }
     match phase {
         Phase::WaitingCamera => {
             *phase = Phase::Countdown {
@@ -231,7 +238,7 @@ fn feed(mut camera: NonSendMut<Camera>, mut game: ResMut<Game>, time: Res<Time>)
             }
         }
         Phase::Playing { round, .. } => {
-            seg.segment(&frame, camera.surface.person().as_deref());
+            seg.segment(&frame, person.as_deref());
             round.observe(&seg.mask);
         }
     }

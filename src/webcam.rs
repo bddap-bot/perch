@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use perch::seg::DepthEstimate;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, HtmlVideoElement};
@@ -15,14 +16,13 @@ extern "C" {
     fn release_camera(video: &HtmlVideoElement);
 }
 
-#[wasm_bindgen(module = "/web/face.js")]
+#[wasm_bindgen(module = "/web/models.js")]
 extern "C" {
     fn eyes(video: &HtmlVideoElement) -> Vec<f64>;
-}
-
-#[wasm_bindgen(module = "/web/person.js")]
-extern "C" {
-    fn person(canvas: &HtmlCanvasElement) -> Vec<u8>;
+    #[wasm_bindgen(js_name = personMask)]
+    fn person_mask(canvas: &HtmlCanvasElement) -> Vec<u8>;
+    #[wasm_bindgen(js_name = depthEstimate)]
+    fn depth_estimate(frame: &[u8], width: u32, height: u32, empty: &[u8]) -> JsValue;
 }
 
 pub enum Status {
@@ -157,7 +157,22 @@ impl Surface {
     }
 
     pub fn person(&self) -> Option<Vec<u8>> {
-        Some(person(&self.ctx.canvas().unwrap())).filter(|mask| !mask.is_empty())
+        Some(person_mask(&self.ctx.canvas().unwrap())).filter(|mask| !mask.is_empty())
+    }
+
+    /// `empty`, when given, is a new rendering of the empty scene for the
+    /// estimator to measure before the next frame.
+    pub fn depth(&self, frame: &[u8], empty: Option<&[u8]>) -> Option<DepthEstimate> {
+        let reply = depth_estimate(frame, self.width, self.height, empty.unwrap_or_default());
+        if reply.is_null() {
+            return None;
+        }
+        let field = |name: &str| js_sys::Reflect::get(&reply, &name.into()).unwrap();
+        Some(DepthEstimate {
+            frame: js_sys::Float32Array::new(&field("frame")).to_vec(),
+            background: js_sys::Float32Array::new(&field("background")).to_vec(),
+            pixels: js_sys::Uint8Array::new(&field("pixels")).to_vec(),
+        })
     }
 }
 

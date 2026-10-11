@@ -1,4 +1,4 @@
-use perch::seg::{CAPTURE_FRAMES, Segmenter};
+use perch::seg::{CAPTURE_FRAMES, DepthEstimate, Segmenter};
 
 const W: usize = 240;
 const H: usize = 180;
@@ -427,4 +427,123 @@ fn a_person_filling_most_of_the_frame_does_not_skew_the_colour_balance() {
         seg.segment(&scene.frame(), Some(&person));
     }
     assert!(outside(&seg, &[body]) < 0.002, "{}", outside(&seg, &[body]));
+}
+
+fn room_depth(x: usize, y: usize) -> f32 {
+    let mut d = 1.0 + y as f32 / H as f32;
+    if (160..230).contains(&x) && (100..170).contains(&y) {
+        d += 0.4;
+    }
+    d + x as f32 * 0.001
+}
+
+fn depth_map(scale: f32, shift: f32, nearer: Option<Rect>) -> Vec<f32> {
+    let mut noise = Noise(3);
+    (0..W * H)
+        .map(|i| {
+            let (x, y) = (i % W, i / W);
+            let mut d = room_depth(x, y);
+            if nearer.is_some_and(|r| (r.0..r.2).contains(&x) && (r.1..r.3).contains(&y)) {
+                d += 0.6;
+            }
+            scale * d + shift + noise.next() * 0.02
+        })
+        .collect()
+}
+
+fn estimate(frame: Vec<f32>, background: Vec<f32>, pixels: Vec<u8>) -> DepthEstimate {
+    DepthEstimate {
+        frame,
+        background,
+        pixels,
+    }
+}
+
+#[test]
+fn depth_differing_from_the_empty_room_only_by_scale_and_shift_is_not_foreground() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    for (scale, shift) in [(1.0, 0.0), (2.3, 0.7), (0.6, -0.2)] {
+        let frame = scene.frame();
+        let now = depth_map(scale, shift, None);
+        seg.observe_depth(estimate(now, depth_map(1.0, 0.0, None), frame));
+        settle(&mut seg, &mut scene);
+        assert!(
+            outside(&seg, &[]) < 0.002,
+            "{scale} {shift}: {}",
+            outside(&seg, &[])
+        );
+    }
+}
+
+#[test]
+fn something_nearer_than_the_empty_room_is_solid_by_depth_alone() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let box_ = (40, 60, 100, 120);
+    let now = depth_map(1.7, 0.3, Some(box_));
+    seg.observe_depth(estimate(now, depth_map(1.0, 0.0, None), scene.frame()));
+    settle(&mut seg, &mut scene);
+    assert!(coverage(&seg, box_) > 0.95, "{}", coverage(&seg, box_));
+    assert!(outside(&seg, &[box_]) < 0.002, "{}", outside(&seg, &[box_]));
+}
+
+#[test]
+fn depth_is_not_trusted_where_the_picture_changed_since_it_was_measured() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let hand = (40, 60, 100, 120);
+    scene.objects.push((hand, [210.0, 160.0, 130.0]));
+    let then = scene.frame();
+    scene.objects.clear();
+    let now = depth_map(1.0, 0.0, Some(hand));
+    seg.observe_depth(estimate(now, depth_map(1.0, 0.0, None), then));
+    settle(&mut seg, &mut scene);
+    assert!(coverage(&seg, hand) == 0.0, "{}", coverage(&seg, hand));
+}
+
+#[test]
+fn the_empty_scene_is_sent_for_depth_after_capture_and_after_exposure_moves() {
+    let mut scene = Scene::new();
+    let mut seg = Segmenter::new(W, H);
+    assert!(seg.depth_background().is_none());
+    seg = captured(&mut scene);
+    assert_eq!(seg.depth_background().map(|b| b.len()), Some(W * H * 4));
+    seg.segment(&scene.frame(), None);
+    assert!(seg.depth_background().is_none());
+    scene.gain = [0.8; 3];
+    seg.segment(&scene.frame(), None);
+    assert!(seg.depth_background().is_some());
+    seg.begin_capture();
+    assert!(seg.depth_background().is_none());
+    scene.gain = [1.0; 3];
+    for _ in 0..CAPTURE_FRAMES {
+        seg.add_capture_frame(&scene.frame());
+    }
+    assert!(seg.depth_background().is_some());
+    seg.segment(&scene.frame(), None);
+    assert!(seg.depth_background().is_none());
+    seg.begin_capture();
+    for _ in 0..CAPTURE_FRAMES {
+        seg.add_capture_frame(&scene.frame());
+    }
+    assert!(seg.depth_background().is_some());
+}
+
+#[test]
+fn recapture_forgets_depth_measured_against_the_old_scene() {
+    let mut scene = Scene::new();
+    let mut seg = captured(&mut scene);
+    let box_ = (40, 60, 100, 120);
+    seg.observe_depth(estimate(
+        depth_map(1.0, 0.0, Some(box_)),
+        depth_map(1.0, 0.0, None),
+        scene.frame(),
+    ));
+    seg.begin_capture();
+    for _ in 0..CAPTURE_FRAMES {
+        seg.add_capture_frame(&scene.frame());
+    }
+    settle(&mut seg, &mut scene);
+    assert!(coverage(&seg, box_) == 0.0, "{}", coverage(&seg, box_));
 }
