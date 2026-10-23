@@ -3,6 +3,7 @@
 ## Rules
 
 - No code comments. A survivor states a why the code cannot show.
+- The history of a codebase should not be encoded in or inferrable from the codebase itself. Systems at rest should look as if they were designed this way from the start. Exceptions exist, including git history and changelogs. Implications include immediate refactors to simplify and remove old patterns, and immediate sweeps and cleanups of code and documentation included with each modification.
 - Changes land directly on `main`.
 - `test-map.json` maps every touched path to the commands that must be green before landing.
 - Sprites are drawn in code (`src/sprite.rs`). Any added asset is self-made or CC0 with its attribution recorded here, and stored lossless.
